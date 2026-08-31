@@ -55,12 +55,6 @@
     margin-left: auto;
     display: flex;
     align-items: center;
-    gap: 8px;
-  }
-
-  #overlay-select-wrap label {
-    font-size: .8rem;
-    color: #94a3b8;
   }
 
   #overlay-select {
@@ -98,7 +92,6 @@
   #panel {
     position: absolute;
     left: 12px;
-    right: 12px;
     /* sits above the Leaflet attribution bar, which is measured live
        (--attribution-h set by JS) since its text can wrap */
     bottom: calc(var(--attribution-h, 16px) + 12px);
@@ -106,16 +99,20 @@
     display: flex;
     flex-direction: column;
     height: 46px;
+    width: fit-content;
     max-height: calc(100% - var(--attribution-h, 16px) - 36px);
     background: rgba(255,255,255,.95);
     backdrop-filter: blur(6px);
     border-radius: 10px;
     box-shadow: 0 6px 24px rgba(0,0,0,.35);
     overflow: hidden;
-    transition: height .3s ease;
+    transition: width .3s ease, height .3s ease;
   }
 
-  #panel.open { height: 50%; }
+  #panel.open {
+    height: 50%;
+    width: calc(100% - 24px);
+  }
 
   #panel-bar {
     flex: 0 0 auto;
@@ -173,6 +170,13 @@
     white-space: nowrap;
   }
 
+  /* collapsed = compact pill: only the bar, no editor/status internals;
+     the Update button keeps its slot while dirty so it stays clickable,
+     otherwise it is removed from layout entirely */
+  #panel:not(.open) #panel-status { display: none; }
+  #panel:not(.open) #panel-body { display: none; }
+  #panel:not(.open) #update-btn:not(.show) { display: none; }
+
   #panel-status.error { color: #dc2626; font-weight: 600; }
 
   #chevron {
@@ -228,9 +232,8 @@
 <header>
   <h1>Geo<span>rrery</span></h1>
   <div id="overlay-select-wrap">
-    <label for="overlay-select">Overlay</label>
-    <select id="overlay-select">
-      <option value="">None</option>
+    <select id="overlay-select" aria-label="Map overlay">
+      <option value="">No Overlay</option>
       <optgroup label="Waymarked Trails">
         <option value="wmt-hiking">Hiking routes</option>
         <option value="wmt-cycling">Cycling routes</option>
@@ -575,10 +578,60 @@
     if (cm) { cm.focus(); } else { textarea.focus(); }
   });
 
+  // The panel is anchored bottom-left: a small pill when collapsed, full
+  // width when open. Collapsed size is fit-content, which CSS can't animate,
+  // so expand/collapse pin an explicit start width, then release it to let
+  // the transition run to the class-driven target.
+  var widthAnimHandler = null;
+
+  function stopWidthAnim() {
+    if (widthAnimHandler) {
+      panel.removeEventListener("transitionend", widthAnimHandler);
+      widthAnimHandler = null;
+    }
+  }
+
+  function expandPanel() {
+    stopWidthAnim();
+    var w0 = panel.offsetWidth;            // current pill (or mid-anim) width
+    panel.classList.add("open");
+    panel.style.height = "";               // release any pinned height
+    panel.style.width = w0 + "px";         // pin start width
+    void panel.offsetWidth;                // commit the start state
+    panel.style.width = "";                // release -> animates to full width
+  }
+
+  function collapsePanel() {
+    stopWidthAnim();
+    var w0 = panel.offsetWidth;            // current full width
+    var h0 = panel.offsetHeight;
+    panel.style.width = w0 + "px";         // pin both at current size
+    panel.style.height = h0 + "px";
+    panel.style.transition = "none";
+    panel.classList.remove("open");
+    panel.style.width = "auto";            // measure the collapsed pill size
+    var w1 = panel.offsetWidth;
+    panel.style.width = w0 + "px";         // back to the pinned start state
+    panel.style.height = h0 + "px";
+    void panel.offsetWidth;
+    panel.style.transition = "";           // re-enable transitions
+    panel.style.width = w1 + "px";         // width: full -> pill
+    panel.style.height = "";               // height: current -> 46px
+    widthAnimHandler = function (e) {
+      if (e.propertyName !== "width") { return; }
+      panel.style.width = "";              // hand control back to CSS
+      panel.removeEventListener("transitionend", widthAnimHandler);
+      widthAnimHandler = null;
+    };
+    panel.addEventListener("transitionend", widthAnimHandler);
+  }
+
   panelBar.addEventListener("click", function () {
-    panel.classList.toggle("open");
     if (panel.classList.contains("open")) {
-      setTimeout(function () { if (cm) { cm.refresh(); } }, 320); // after height transition
+      collapsePanel();
+    } else {
+      expandPanel();
+      setTimeout(function () { if (cm) { cm.refresh(); } }, 320); // after transition
       if (cm) { cm.focus(); } else { textarea.focus(); }
     }
   });
