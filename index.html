@@ -51,6 +51,37 @@
 
   header h1 span { color: #38bdf8; }
 
+  #overlay-select-wrap {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  #overlay-select-wrap label {
+    font-size: .8rem;
+    color: #94a3b8;
+  }
+
+  #overlay-select {
+    background: #0f172a;
+    color: #f1f5f9;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: .85rem;
+    outline: none;
+    cursor: pointer;
+    max-width: 190px;
+  }
+
+  #overlay-select:hover, #overlay-select:focus { border-color: #38bdf8; }
+
+  #overlay-select option, #overlay-select optgroup {
+    background: #1e293b;
+    color: #f1f5f9;
+  }
+
   #map-wrap {
     flex: 1 1 auto;
     position: relative;
@@ -194,6 +225,23 @@
 
 <header>
   <h1>Geo<span>rrery</span></h1>
+  <div id="overlay-select-wrap">
+    <label for="overlay-select">Overlay</label>
+    <select id="overlay-select">
+      <option value="">None</option>
+      <optgroup label="Waymarked Trails">
+        <option value="wmt-hiking">Hiking routes</option>
+        <option value="wmt-cycling">Cycling routes</option>
+        <option value="wmt-mtb">MTB routes</option>
+        <option value="wmt-skating">Skating routes</option>
+        <option value="wmt-riding">Riding routes</option>
+        <option value="wmt-winter">Winter routes</option>
+      </optgroup>
+      <optgroup label="OpenSeaMap">
+        <option value="oseam-seamark">Sea marks</option>
+      </optgroup>
+    </select>
+  </div>
 </header>
 
 <div id="map-wrap">
@@ -320,7 +368,70 @@
           layer.bindPopup(feature.properties.name);
         }
       }
-    }).addTo(map);
+  }).addTo(map);
+
+  // ---- Overlay selection (header drop-down, single choice) ----
+  var OVERLAY_STORAGE_KEY = "georrery.overlay";
+  var OVERLAYS = {
+    "wmt-hiking": {
+      url: "https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png", maxZoom: 18,
+      attribution: "Routes: &copy; <a href='https://waymarkedtrails.org'>waymarkedtrails.org</a> (CC-BY-SA)"
+    },
+    "wmt-cycling": {
+      url: "https://tile.waymarkedtrails.org/cycling/{z}/{x}/{y}.png", maxZoom: 18,
+      attribution: "Routes: &copy; <a href='https://waymarkedtrails.org'>waymarkedtrails.org</a> (CC-BY-SA)"
+    },
+    "wmt-mtb": {
+      url: "https://tile.waymarkedtrails.org/mtb/{z}/{x}/{y}.png", maxZoom: 18,
+      attribution: "Routes: &copy; <a href='https://waymarkedtrails.org'>waymarkedtrails.org</a> (CC-BY-SA)"
+    },
+    "wmt-skating": {
+      url: "https://tile.waymarkedtrails.org/skating/{z}/{x}/{y}.png", maxZoom: 18,
+      attribution: "Routes: &copy; <a href='https://waymarkedtrails.org'>waymarkedtrails.org</a> (CC-BY-SA)"
+    },
+    "wmt-riding": {
+      url: "https://tile.waymarkedtrails.org/riding/{z}/{x}/{y}.png", maxZoom: 18,
+      attribution: "Routes: &copy; <a href='https://waymarkedtrails.org'>waymarkedtrails.org</a> (CC-BY-SA)"
+    },
+    "wmt-winter": {
+      url: "https://tile.waymarkedtrails.org/winter/{z}/{x}/{y}.png", maxZoom: 18,
+      attribution: "Routes: &copy; <a href='https://waymarkedtrails.org'>waymarkedtrails.org</a> (CC-BY-SA)"
+    },
+    "oseam-seamark": {
+      url: "https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png", maxZoom: 18,
+      attribution: "Sea marks: &copy; <a href='https://openseamap.org'>OpenSeaMap</a> contributors (CC-BY-SA)"
+    }
+  };
+  var overlaySelect = document.getElementById("overlay-select");
+  var activeOverlay = null;
+
+  function setOverlay(id) {
+    if (activeOverlay) {
+      map.removeLayer(activeOverlay);
+      activeOverlay = null;
+    }
+    var def = OVERLAYS[id];
+    if (def) {
+      activeOverlay = L.tileLayer(def.url, {
+        maxZoom: def.maxZoom,
+        opacity: 0.9,
+        attribution: def.attribution
+      }).addTo(map);
+    }
+    try { localStorage.setItem(OVERLAY_STORAGE_KEY, id || ""); } catch (e) { /* ignore */ }
+  }
+
+  overlaySelect.addEventListener("change", function () {
+    setOverlay(overlaySelect.value);
+  });
+
+  (function restoreOverlay() {
+    var saved = "";
+    try { saved = localStorage.getItem(OVERLAY_STORAGE_KEY) || ""; } catch (e) { /* ignore */ }
+    if (!OVERLAYS[saved]) { saved = ""; }
+    overlaySelect.value = saved;
+    if (saved) { setOverlay(saved); }
+  })();
   }
 
   function parseEditor() {
