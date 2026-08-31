@@ -7,6 +7,9 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
       crossorigin="">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.20.0/dist/leaflet-geoman.css"
+      integrity="sha512-eqIZI0sGJKWMxBLGcHYg7Tus8jzMu78XcJAPXIlF8P2JP1dFKw5fi7vmOZ3bW8Pk6ae/C4nCxiVF1noCBmOjQQ=="
+      crossorigin="anonymous">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/codemirror.min.css"
       integrity="sha512-yAvYFCgl0jKssk1XXo079Ec7sVXfN3OIotWiUP7zTrHhcRxMgRnEFjYhesnBZSfYPkd3sX7BmVTaWQLXvITMnQ=="
       crossorigin="anonymous">
@@ -212,6 +215,9 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
         crossorigin=""></script>
+<script src="https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.20.0/dist/leaflet-geoman.js"
+        integrity="sha512-BiIrkmwG5bdOa1AWTMFAI9I5ab/qQd6tdhQLEmawFYfT0YlR77V/l2Jvel3k8hA45PwV9V4JcXC6TjDFkSV1XA=="
+        crossorigin="anonymous"></script>
 <!-- cdnjs's precompressed brotli copy of codemirror.min.js 5.65.21 is out of sync
      (different bytes than the plain file), which breaks SRI in browsers that
      negotiate brotli - this file is served from jsDelivr instead. -->
@@ -387,6 +393,7 @@
   refreshStatus();
 
   function onEdit() {
+    if (syncingFromMap) { return; } // map-originated; syncMapToText owns the state
     updateBtn.classList.toggle("show", editorValue() !== lastRendered);
     scheduleSync(); // persist + validate per keypress (debounced)
   }
@@ -424,6 +431,68 @@
         e.stopPropagation();
       });
     });
+  }
+
+  // ---- Graphical drawing/editing (Leaflet-Geoman) ----
+  // Map changes are the same data as the text, so they sync straight back into
+  // the editor + LocalStorage without needing the Update button.
+  var mapSyncTimer = null;
+  var syncingFromMap = false;
+
+  function addSerialized(layer) {
+    // a cut can produce a LayerGroup of several pieces - flatten it
+    if (layer instanceof L.LayerGroup) {
+      layer.getLayers().forEach(function (l) { dataLayer.addLayer(l); });
+    } else {
+      dataLayer.addLayer(layer);
+    }
+  }
+
+  function pruneRemoved() {
+    dataLayer.getLayers().slice().forEach(function (layer) {
+      if (!map.hasLayer(layer)) { dataLayer.removeLayer(layer); }
+    });
+  }
+
+  function syncMapToText() {
+    if (!dataLayer) { return; }
+    pruneRemoved();
+    var text = JSON.stringify(dataLayer.toGeoJSON(), null, 2);
+    syncingFromMap = true;
+    if (cm) { cm.setValue(text); } else { textarea.value = text; }
+    syncingFromMap = false;
+    lastRendered = text;
+    saveNow();
+    refreshStatus();
+  }
+
+  function scheduleMapSync() {
+    clearTimeout(mapSyncTimer);
+    mapSyncTimer = setTimeout(syncMapToText, 400);
+  }
+
+  if (map.pm) {
+    map.pm.addControls({
+      position: "topleft",
+      drawMarker: true,
+      drawPolyline: true,
+      drawPolygon: true,
+      drawRectangle: true,
+      drawCircle: false,  // circles don't round-trip to valid GeoJSON
+      drawText: false,
+      editMode: true,
+      dragMode: true,
+      rotateMode: true,
+      cutPolygon: true,
+      removalMode: true
+    });
+
+    map.on("pm:create", function (e) { addSerialized(e.layer); scheduleMapSync(); });
+    map.on("pm:cut", function (e) { addSerialized(e.layer); scheduleMapSync(); });
+    map.on("pm:remove", scheduleMapSync);
+    map.on("pm:edit pm:dragend pm:rotateend", scheduleMapSync);
+  } else {
+    setStatus("Geoman CDN failed to load - drawing disabled", true);
   }
 
   window.addEventListener("pagehide", function () {
