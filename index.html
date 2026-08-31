@@ -7,6 +7,12 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
       crossorigin="">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/codemirror.min.css"
+      integrity="sha512-yAvYFCgl0jKssk1XXo079Ec7sVXfN3OIotWiUP7zTrHhcRxMgRnEFjYhesnBZSfYPkd3sX7BmVTaWQLXvITMnQ=="
+      crossorigin="anonymous">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/addon/lint/lint.min.css"
+      integrity="sha512-bfa1NKQKC/ytQSvZAqmdhn61tSpSyVQ1nkp41fkhDsPeG3jTvd36smZdLYv4Zs7gXHjNwTk0yDvS1nMfVzwwlw=="
+      crossorigin="anonymous">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -92,6 +98,35 @@
     color: #1e293b;
   }
 
+  #update-btn {
+    flex: 0 0 auto;
+    border: none;
+    border-radius: 999px;
+    padding: 5px 14px;
+    font: 600 .78rem system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    letter-spacing: .02em;
+    color: #fff;
+    background: #0284c7;
+    cursor: pointer;
+    opacity: 0;
+    transform: translateX(8px);
+    pointer-events: none;
+    transition: opacity .25s ease, transform .25s ease, background-color .15s ease;
+  }
+
+  #update-btn.show {
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: auto;
+  }
+
+  #update-btn:disabled {
+    background: #94a3b8;
+    cursor: not-allowed;
+  }
+
+  #update-btn:not(:disabled):hover { background: #0369a1; }
+
   #panel-status {
     flex: 1 1 auto;
     font-size: .8rem;
@@ -118,6 +153,26 @@
     padding: 0 12px 12px;
   }
 
+  /* ---- CodeMirror ---- */
+  .CodeMirror {
+    height: 100%;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    background: #f8fafc;
+    color: #0f172a;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .CodeMirror-focused { border-color: #38bdf8; }
+
+  .CodeMirror-gutters {
+    background: #eef2f7;
+    border-right: 1px solid #dbe3ec;
+  }
+
+  .CodeMirror-linenumber { color: #94a3b8; }
+
+  /* fallback when CodeMirror fails to load */
   #geojson-input {
     width: 100%;
     height: 100%;
@@ -130,8 +185,6 @@
     background: #f8fafc;
     outline: none;
   }
-
-  #geojson-input:focus { border-color: #38bdf8; }
 </style>
 </head>
 <body>
@@ -146,12 +199,12 @@
   <div id="panel">
     <div id="panel-bar" title="Toggle GeoJSON panel">
       <h2>GeoJSON</h2>
+      <button id="update-btn" type="button" title="Render edited GeoJSON onto the map">Update</button>
       <div id="panel-status"></div>
       <span id="chevron">&#9650;</span>
     </div>
     <div id="panel-body">
-      <textarea id="geojson-input" spellcheck="false"
-                placeholder='{"type": "FeatureCollection", "features": []}'></textarea>
+      <textarea id="geojson-input" spellcheck="false"></textarea>
     </div>
   </div>
 </div>
@@ -159,6 +212,30 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
         crossorigin=""></script>
+<!-- cdnjs's precompressed brotli copy of codemirror.min.js 5.65.21 is out of sync
+     (different bytes than the plain file), which breaks SRI in browsers that
+     negotiate brotli - this file is served from jsDelivr instead. -->
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.21/lib/codemirror.min.js"
+        integrity="sha512-XF1G4hLzXBiQrxOjvhSYHCNoeDIXsDOJtqZMOptZwQtL84qN4iswdD7OJ42iCoxVLppfokVmPl/9UZKWQcFh/w=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/mode/javascript/javascript.min.js"
+        integrity="sha512-k1xN8Ok3EjJVqkyue+rrYB9WJi34a101SAdtjJGS4sM0ZSFTb7IBseqeCL4OcKzmQRmtrKIYqVROZYIpHXc3Mg=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsonlint/1.6.0/jsonlint.min.js"
+        integrity="sha512-6qbnCNQe7wVcBDvhNJT6lZsbDKHCQQBk7yOBQg4s/9GG812CknK0EEIqG2IS10XuNxIQNWjMJd6VLwwezICz6w=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/addon/lint/lint.min.js"
+        integrity="sha512-lXcl97MDW/i/BsKkQ6J4M3iSNyIpGyEdbIZTMM77cwtxoDZDABxH/7n3G3Sidx/Bjrpa1KrX8dfNPnAqafQjmw=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/addon/lint/json-lint.min.js"
+        integrity="sha512-r8rxpmeeEUAdIovyAOYwk1/kb4vK4wGk5aAj+30blS6DoLJyNKrukS483cLXgFoTV3JGpkFH6r0kKZWiRiut/A=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/addon/edit/closebrackets.min.js"
+        integrity="sha512-rijIQfP2KYlfTjFMjJg33a5fVUsZbLsy6fLSCZsM1jNI35n4xl1cBiIjxK5tANQYPWqa1niMYK5lWn2CTSUPKw=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/addon/edit/matchbrackets.min.js"
+        integrity="sha512-ynfHqOx3h/V0CDEdHKHdS4C0Kp5tcpILVbUOqNczDbRDiKqrMx3mONwyFHcMmOs43MMiGfD9gDjbvnQ5fOZxvw=="
+        crossorigin="anonymous"></script>
 <script>
 (function () {
   "use strict";
@@ -198,85 +275,161 @@
       '(<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)'
   }).addTo(map);
 
-  var panel      = document.getElementById("panel");
-  var panelBar   = document.getElementById("panel-bar");
-  var statusEl   = document.getElementById("panel-status");
-  var textarea   = document.getElementById("geojson-input");
-  var dataLayer  = null;
+  var panel     = document.getElementById("panel");
+  var panelBar  = document.getElementById("panel-bar");
+  var statusEl  = document.getElementById("panel-status");
+  var updateBtn = document.getElementById("update-btn");
+  var textarea  = document.getElementById("geojson-input");
+  var dataLayer = null;
+  var lastRendered = null;
 
   function setStatus(text, isError) {
     statusEl.textContent = text;
     statusEl.classList.toggle("error", !!isError);
   }
 
-  function renderGeoJSON(text) {
-    var data;
-    try {
-      data = JSON.parse(text);
-    } catch (e) {
-      setStatus("Invalid JSON: " + e.message, true);
-      return;
+  function countFeatures(data) {
+    if (data && data.type === "FeatureCollection" && Array.isArray(data.features)) {
+      return data.features.length;
     }
-    try {
-      if (dataLayer) {
-        map.removeLayer(dataLayer);
-        dataLayer = null;
-      }
-      dataLayer = L.geoJSON(data, {
-        style: function () {
-          return { color: "#0284c7", weight: 2, fillOpacity: 0.25 };
-        },
-        pointToLayer: function (_feature, latlng) {
-          return L.circleMarker(latlng, {
-            radius: 6, color: "#0284c7", weight: 2, fillOpacity: 0.5
-          });
-        },
-        onEachFeature: function (feature, layer) {
-          if (feature.properties && feature.properties.name) {
-            layer.bindPopup(feature.properties.name);
-          }
+    return 1;
+  }
+
+  function renderData(data) {
+    if (dataLayer) {
+      map.removeLayer(dataLayer);
+      dataLayer = null;
+    }
+    dataLayer = L.geoJSON(data, {
+      style: function () {
+        return { color: "#0284c7", weight: 2, fillOpacity: 0.25 };
+      },
+      pointToLayer: function (_feature, latlng) {
+        return L.circleMarker(latlng, {
+          radius: 6, color: "#0284c7", weight: 2, fillOpacity: 0.5
+        });
+      },
+      onEachFeature: function (feature, layer) {
+        if (feature.properties && feature.properties.name) {
+          layer.bindPopup(feature.properties.name);
         }
-      }).addTo(map);
-      var count = dataLayer.getLayers().length;
-      setStatus(count + " feature" + (count === 1 ? "" : "s") + " rendered", false);
+      }
+    }).addTo(map);
+  }
+
+  function parseEditor() {
+    var text = editorValue();
+    try {
+      return { ok: true, data: JSON.parse(text), text: text };
     } catch (e) {
-      setStatus("Invalid GeoJSON: " + e.message, true);
+      return { ok: false, error: e.message, text: text };
     }
   }
 
-  var saveTimer = null;
-  function onInput() {
-    var text = textarea.value;
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(function () {
-      try { localStorage.setItem(STORAGE_KEY, text); } catch (e) { /* storage full/unavailable */ }
-    }, 300);
-    renderGeoJSON(text);
+  function refreshStatus() {
+    var r = parseEditor();
+    var dirty = r.text !== lastRendered;
+    updateBtn.classList.toggle("show", dirty);
+    updateBtn.disabled = !r.ok;
+    if (!r.ok) {
+      setStatus("Invalid JSON: " + r.error, true);
+      return;
+    }
+    var n = countFeatures(r.data);
+    setStatus(n + " feature" + (n === 1 ? "" : "s") + (dirty ? " \u00b7 unsaved" : " rendered"), false);
   }
+
+  function saveNow() {
+    try { localStorage.setItem(STORAGE_KEY, editorValue()); } catch (e) { /* storage full/unavailable */ }
+  }
+
+  var syncTimer = null;
+  function scheduleSync() {
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(function () {
+      saveNow();
+      refreshStatus();
+    }, 300);
+  }
+
+  // Load persisted GeoJSON (or a sample) into the textarea before CM takes over.
+  var saved = null;
+  try { saved = localStorage.getItem(STORAGE_KEY); } catch (e) { /* ignore */ }
+  textarea.value = (saved !== null && saved !== "")
+    ? saved
+    : JSON.stringify(SAMPLE_GEOJSON, null, 2);
+
+  // CodeMirror, with a plain-textarea fallback if the CDN library fails to load.
+  var cm = null;
+  var editorValue;
+
+  if (typeof CodeMirror !== "undefined") {
+    cm = CodeMirror.fromTextArea(textarea, {
+      mode: "application/json",
+      lineNumbers: true,
+      matchBrackets: true,
+      autoCloseBrackets: true,
+      lint: true,
+      indentUnit: 2,
+      tabSize: 2,
+      gutters: ["CodeMirror-lint-markers", "CodeMirror-linenumbers"]
+    });
+    editorValue = function () { return cm.getValue(); };
+  } else {
+    editorValue = function () { return textarea.value; };
+    setStatus("CodeMirror CDN failed to load - plain text mode", true);
+  }
+
+  lastRendered = editorValue();
+
+  var r = parseEditor();
+  if (r.ok) { renderData(r.data); }
+  refreshStatus();
+
+  function onEdit() {
+    updateBtn.classList.toggle("show", editorValue() !== lastRendered);
+    scheduleSync(); // persist + validate per keypress (debounced)
+  }
+
+  if (cm) { cm.on("change", onEdit); }
+  else { textarea.addEventListener("input", onEdit); }
+
+  updateBtn.addEventListener("click", function (e) {
+    e.stopPropagation(); // don't toggle the panel
+    var res = parseEditor();
+    if (!res.ok) {
+      setStatus("Invalid JSON: " + res.error, true);
+      return;
+    }
+    renderData(res.data);
+    lastRendered = res.text;
+    clearTimeout(syncTimer);
+    saveNow();
+    refreshStatus();
+    if (cm) { cm.focus(); } else { textarea.focus(); }
+  });
 
   panelBar.addEventListener("click", function () {
     panel.classList.toggle("open");
     if (panel.classList.contains("open")) {
-      textarea.focus();
+      setTimeout(function () { if (cm) { cm.refresh(); } }, 320); // after height transition
+      if (cm) { cm.focus(); } else { textarea.focus(); }
     }
   });
 
-  textarea.addEventListener("input", onInput);
-  textarea.addEventListener("keydown", function (e) {
-    e.stopPropagation(); // keep Leaflet keyboard shortcuts from firing while typing
-  });
+  if (cm) {
+    // Keep Leaflet keyboard shortcuts from firing while typing in the editor.
+    ["keydown", "keyup", "keypress"].forEach(function (type) {
+      cm.getWrapperElement().addEventListener(type, function (e) {
+        e.stopPropagation();
+      });
+    });
+  }
 
   window.addEventListener("pagehide", function () {
-    clearTimeout(saveTimer);
-    try { localStorage.setItem(STORAGE_KEY, textarea.value); } catch (e) { /* ignore */ }
+    clearTimeout(syncTimer);
+    saveNow();
   });
-
-  // Init: load persisted GeoJSON, else seed a sample. Map stays zoomed to world.
-  var saved = null;
-  try { saved = localStorage.getItem(STORAGE_KEY); } catch (e) { /* ignore */ }
-  var initial = (saved !== null && saved !== "") ? saved : JSON.stringify(SAMPLE_GEOJSON, null, 2);
-  textarea.value = initial;
-  renderGeoJSON(initial);
 })();
 </script>
 </body>
