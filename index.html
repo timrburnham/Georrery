@@ -47,6 +47,39 @@
     font-size: 1.15rem;
     font-weight: 700;
     letter-spacing: .04em;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  header h1:hover span { color: #7dd3fc; }
+
+  /* slides open to the left of the brand name */
+  #menu-buttons {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    transition: max-width .3s ease, opacity .25s ease;
+  }
+
+  header.menu-open #menu-buttons { max-width: 170px; opacity: 1; }
+
+  #menu-buttons button {
+    border: 1px solid #475569;
+    background: #334155;
+    color: #f1f5f9;
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: .8rem;
+    cursor: pointer;
+  }
+
+  #menu-buttons button:hover {
+    background: #dc2626;
+    border-color: #dc2626;
   }
 
   header h1 span { color: #38bdf8; }
@@ -131,7 +164,8 @@
     color: #1e293b;
   }
 
-  #update-btn {
+  #update-btn,
+  #nevermind-btn {
     flex: 0 0 auto;
     border: none;
     border-radius: 999px;
@@ -147,7 +181,10 @@
     transition: opacity .25s ease, transform .25s ease, background-color .15s ease;
   }
 
-  #update-btn.show {
+  #nevermind-btn { background: #64748b; }
+
+  #update-btn.show,
+  #nevermind-btn.show {
     opacity: 1;
     transform: translateX(0);
     pointer-events: auto;
@@ -159,6 +196,7 @@
   }
 
   #update-btn:not(:disabled):hover { background: #0369a1; }
+  #nevermind-btn:not(:disabled):hover { background: #475569; }
 
   #panel-status {
     flex: 1 1 auto;
@@ -175,7 +213,8 @@
      otherwise it is removed from layout entirely */
   #panel:not(.open) #panel-status { display: none; }
   #panel:not(.open) #panel-body { display: none; }
-  #panel:not(.open) #update-btn:not(.show) { display: none; }
+  #panel:not(.open) #update-btn:not(.show),
+  #panel:not(.open) #nevermind-btn:not(.show) { display: none; }
 
   #panel-status.error { color: #dc2626; font-weight: 600; }
 
@@ -333,7 +372,10 @@
 <body>
 
 <header>
-  <h1>Geo<span>rrery</span></h1>
+  <div id="menu-buttons">
+    <button type="button" id="reset-btn" title="Clear all locally stored data and the GeoJSON text">Reset</button>
+  </div>
+  <h1 id="brand" title="Show menu">Geo<span>rrery</span></h1>
   <div id="overlay-select-wrap">
     <select id="overlay-select" aria-label="Map overlay">
       <option value="">No Overlay</option>
@@ -359,6 +401,7 @@
     <div id="panel-bar" title="Toggle GeoJSON panel">
       <h2>GeoJSON</h2>
       <button id="update-btn" type="button" title="Render edited GeoJSON onto the map">Update</button>
+      <button id="nevermind-btn" type="button" title="Discard edits and restore the saved GeoJSON">Never mind</button>
       <div id="panel-status"></div>
       <span id="chevron">&#9650;</span>
     </div>
@@ -405,24 +448,12 @@
 (function () {
   "use strict";
 
-  var SAMPLE_GEOJSON = {
-    "type": "FeatureCollection",
-    "features": [
-      {
-        "type": "Feature",
-        "properties": { "name": "Null Island", "datetime": "1920?" },
-        "geometry": { "type": "Point", "coordinates": [0, 0] }
-      },
-      {
-        "type": "Feature",
-        "properties": { "name": "Sample Area", "start": "1850", "end": "1941" },
-        "geometry": {
-          "type": "Polygon",
-          "coordinates": [[[-10, 35], [10, 35], [10, 50], [-10, 50], [-10, 35]]]
-        }
-      }
-    ]
-  };
+  // LocalStorage keys - one topic per key, "georrery.<topic>" naming.
+  var GEOJSON_STORAGE_KEY = "georrery.geojson"; // editor contents
+  var OVERLAY_STORAGE_KEY = "georrery.overlay"; // selected map overlay
+  var VIEW_STORAGE_KEY = "georrery.view";       // last map position + zoom
+
+  var EMPTY_GEOJSON_TEXT = JSON.stringify({ type: "FeatureCollection", features: [] }, null, 2);
 
   var map = L.map("map", {
     worldCopyJump: true,
@@ -442,7 +473,9 @@
   var panelBar  = document.getElementById("panel-bar");
   var statusEl  = document.getElementById("panel-status");
   var updateBtn = document.getElementById("update-btn");
+  var neverMindBtn = document.getElementById("nevermind-btn");
   var textarea  = document.getElementById("geojson-input");
+  var brand     = document.getElementById("brand");
   var dataLayer = null;
   var lastRendered = null;
 
@@ -504,7 +537,7 @@
   function saveView() {
     try {
       var c = map.getCenter();
-      localStorage.setItem("georrery.view", JSON.stringify({
+      localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify({
         lat: Math.round(c.lat * 1e5) / 1e5,
         lng: Math.round(c.lng * 1e5) / 1e5,
         zoom: map.getZoom()
@@ -514,7 +547,7 @@
 
   function restoreView() {
     try {
-      var v = JSON.parse(localStorage.getItem("georrery.view"));
+      var v = JSON.parse(localStorage.getItem(VIEW_STORAGE_KEY));
       if (v && isFinite(v.lat) && isFinite(v.lng) && isFinite(v.zoom)) {
         map.setView([v.lat, v.lng], Math.max(0, Math.min(17, Math.round(v.zoom))), { animate: false });
         return true;
@@ -578,7 +611,7 @@
         attribution: def.attribution
       }).addTo(map);
     }
-    try { localStorage.setItem("georrery.overlay", id || ""); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(OVERLAY_STORAGE_KEY, id || ""); } catch (e) { /* ignore */ }
   }
 
   overlaySelect.addEventListener("change", function () {
@@ -587,7 +620,7 @@
 
   (function restoreOverlay() {
     var saved = "";
-    try { saved = localStorage.getItem("georrery.overlay") || ""; } catch (e) { /* ignore */ }
+    try { saved = localStorage.getItem(OVERLAY_STORAGE_KEY) || ""; } catch (e) { /* ignore */ }
     if (!OVERLAYS[saved]) { saved = ""; }
     overlaySelect.value = saved;
     if (saved) { setOverlay(saved); }
@@ -606,6 +639,7 @@
     var r = parseEditor();
     var dirty = r.text !== lastRendered;
     updateBtn.classList.toggle("show", dirty);
+    neverMindBtn.classList.toggle("show", dirty);
     updateBtn.disabled = !r.ok;
     if (!r.ok) {
       setStatus("Invalid JSON: " + r.error, true);
@@ -616,16 +650,14 @@
   }
 
   function saveNow() {
-    try { localStorage.setItem("georrery.geojson", editorValue()); } catch (e) { /* storage full/unavailable */ }
+    try { localStorage.setItem(GEOJSON_STORAGE_KEY, editorValue()); } catch (e) { /* storage full/unavailable */ }
   }
 
-  var syncTimer = null;
-  function scheduleSync() {
-    clearTimeout(syncTimer);
-    syncTimer = setTimeout(function () {
-      saveNow();
-      refreshStatus();
-    }, 300);
+  var statusTimer = null;
+  function scheduleStatusRefresh() {
+    // live validation only - the text itself saves exclusively via "Update"
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(refreshStatus, 300);
   }
 
   // ---- Temporal features: fuzzy-date popups, range filter, playback ----
@@ -889,10 +921,10 @@
 
   // Load persisted GeoJSON (or a sample) into the textarea before CM takes over.
   var saved = null;
-  try { saved = localStorage.getItem("georrery.geojson"); } catch (e) { /* ignore */ }
+  try { saved = localStorage.getItem(GEOJSON_STORAGE_KEY); } catch (e) { /* ignore */ }
   textarea.value = (saved !== null && saved !== "")
     ? saved
-    : JSON.stringify(SAMPLE_GEOJSON, null, 2);
+    : EMPTY_GEOJSON_TEXT;
 
   // CodeMirror, with a plain-textarea fallback if the CDN library fails to load.
   var cm = null;
@@ -923,8 +955,10 @@
 
   function onEdit() {
     if (syncingFromMap) { return; } // map-originated; syncMapToText owns the state
-    updateBtn.classList.toggle("show", editorValue() !== lastRendered);
-    scheduleSync(); // persist + validate per keypress (debounced)
+    var dirty = editorValue() !== lastRendered;
+    updateBtn.classList.toggle("show", dirty);
+    neverMindBtn.classList.toggle("show", dirty);
+    scheduleStatusRefresh();
   }
 
   if (cm) { cm.on("change", onEdit); }
@@ -939,8 +973,27 @@
     }
     renderData(res.data);
     lastRendered = res.text;
-    clearTimeout(syncTimer);
+    clearTimeout(statusTimer);
     saveNow();
+    refreshStatus();
+    if (cm) { cm.focus(); } else { textarea.focus(); }
+  });
+
+  neverMindBtn.addEventListener("click", function (e) {
+    e.stopPropagation(); // don't toggle the panel
+    var saved = null;
+    try { saved = localStorage.getItem(GEOJSON_STORAGE_KEY); } catch (err) { /* ignore */ }
+    var text = (saved !== null && saved !== "") ? saved : EMPTY_GEOJSON_TEXT;
+    syncingFromMap = false;
+    if (cm) { cm.setValue(text); } else { textarea.value = text; }
+    clearTimeout(statusTimer);
+    if (text !== lastRendered) {
+      // storage and the editor disagree with what is drawn (e.g. right after
+      // a Reset) - bring the map back in line with the restored text
+      var res = parseEditor();
+      if (res.ok) { renderData(res.data); }
+    }
+    lastRendered = text;
     refreshStatus();
     if (cm) { cm.focus(); } else { textarea.focus(); }
   });
@@ -993,14 +1046,45 @@
     panel.addEventListener("transitionend", widthAnimHandler);
   }
 
+  function openPanel() {
+    if (!panel.classList.contains("open")) { expandPanel(); }
+    setTimeout(function () { if (cm) { cm.refresh(); } }, 320); // after transition
+    if (cm) { cm.focus(); } else { textarea.focus(); }
+  }
+
   panelBar.addEventListener("click", function () {
     if (panel.classList.contains("open")) {
       collapsePanel();
     } else {
-      expandPanel();
-      setTimeout(function () { if (cm) { cm.refresh(); } }, 320); // after transition
-      if (cm) { cm.focus(); } else { textarea.focus(); }
+      openPanel();
     }
+  });
+
+  // ---- Header menu: brand click slides the name right, revealing buttons ----
+  var header = document.querySelector("header");
+  brand.addEventListener("click", function () {
+    header.classList.toggle("menu-open");
+  });
+
+  function resetAll() {
+    try { localStorage.clear(); } catch (e) { /* ignore */ }
+    if (activeOverlay) {                    // overlay state lived in storage
+      map.removeLayer(activeOverlay);
+      activeOverlay = null;
+      overlaySelect.value = "";
+    }
+    // Wipe the text but leave lastRendered untouched: the map (and storage)
+    // keep the old features until the user confirms with "Update".
+    syncingFromMap = false;
+    if (cm) { cm.setValue(EMPTY_GEOJSON_TEXT); } else { textarea.value = EMPTY_GEOJSON_TEXT; }
+    refreshStatus();
+    openPanel();
+  }
+
+  document.getElementById("reset-btn").addEventListener("click", function (e) {
+    e.stopPropagation();
+    resetAll();
+    header.classList.remove("menu-open");
   });
 
   if (cm) {
@@ -1085,10 +1169,9 @@
   }
 
   window.addEventListener("pagehide", function () {
-    clearTimeout(syncTimer);
+    clearTimeout(statusTimer);
     clearTimeout(viewSaveTimer);
-    saveNow();
-    saveView();
+    saveView(); // unsaved text edits are intentionally discarded
   });
 })();
 </script>
