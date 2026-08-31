@@ -473,6 +473,7 @@
         });
       },
       onEachFeature: function (feature, layer) {
+        wireGeomanSync(layer);
         var html = popupHtml(feature);
         if (html) { layer.bindPopup(html, { className: "feat-popup" }); }
       }
@@ -1050,6 +1051,16 @@
     mapSyncTimer = setTimeout(syncMapToText, 400);
   }
 
+  // pm:edit / pm:dragend / pm:rotateend are LAYER events in Geoman (only
+  // create/cut/remove fire on the map), so every feature gets its own listeners.
+  function wireGeomanSync(layer) {
+    if (layer.getLayers) {
+      layer.getLayers().forEach(function (l) { wireGeomanSync(l); });
+      return;
+    }
+    layer.on("pm:edit pm:dragend pm:rotateend", scheduleMapSync);
+  }
+
   if (map.pm) {
     map.pm.addControls({
       position: "topleft",
@@ -1066,10 +1077,9 @@
       removalMode: true
     });
 
-    map.on("pm:create", function (e) { addSerialized(e.layer); scheduleMapSync(); });
-    map.on("pm:cut", function (e) { addSerialized(e.layer); scheduleMapSync(); });
+    map.on("pm:create", function (e) { addSerialized(e.layer); wireGeomanSync(e.layer); scheduleMapSync(); });
+    map.on("pm:cut", function (e) { addSerialized(e.layer); wireGeomanSync(e.layer); scheduleMapSync(); });
     map.on("pm:remove", scheduleMapSync);
-    map.on("pm:edit pm:dragend pm:rotateend", scheduleMapSync);
   } else {
     setStatus("Geoman CDN failed to load - drawing disabled", true);
   }
