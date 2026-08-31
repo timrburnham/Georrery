@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Georrery</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin="">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    background: #0f172a;
+  }
+
+  header {
+    flex: 0 0 auto;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    background: #1e293b;
+    color: #f1f5f9;
+    box-shadow: 0 2px 8px rgba(0,0,0,.35);
+    z-index: 1000;
+  }
+
+  header h1 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+  }
+
+  header h1 span { color: #38bdf8; }
+
+  #map-wrap {
+    flex: 1 1 auto;
+    position: relative;
+    min-height: 0;
+  }
+
+  #map {
+    position: absolute;
+    inset: 0;
+    background: #a8c8e0;
+  }
+
+  /* ---- GeoJSON panel ---- */
+  #panel {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    height: 46px;
+    max-height: calc(100% - 24px);
+    background: rgba(255,255,255,.95);
+    backdrop-filter: blur(6px);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.35);
+    overflow: hidden;
+    transition: height .3s ease;
+  }
+
+  #panel.open { height: 50%; }
+
+  #panel-bar {
+    flex: 0 0 auto;
+    height: 46px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 16px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  #panel-bar h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #1e293b;
+  }
+
+  #panel-status {
+    flex: 1 1 auto;
+    font-size: .8rem;
+    color: #64748b;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #panel-status.error { color: #dc2626; font-weight: 600; }
+
+  #chevron {
+    flex: 0 0 auto;
+    color: #64748b;
+    transition: transform .3s ease;
+  }
+
+  #panel.open #chevron { transform: rotate(180deg); }
+
+  #panel-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 0 12px 12px;
+  }
+
+  #geojson-input {
+    width: 100%;
+    height: 100%;
+    resize: none;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 10px;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: #0f172a;
+    background: #f8fafc;
+    outline: none;
+  }
+
+  #geojson-input:focus { border-color: #38bdf8; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Geo<span>rrery</span></h1>
+</header>
+
+<div id="map-wrap">
+  <div id="map"></div>
+
+  <div id="panel">
+    <div id="panel-bar" title="Toggle GeoJSON panel">
+      <h2>GeoJSON</h2>
+      <div id="panel-status"></div>
+      <span id="chevron">&#9650;</span>
+    </div>
+    <div id="panel-body">
+      <textarea id="geojson-input" spellcheck="false"
+                placeholder='{"type": "FeatureCollection", "features": []}'></textarea>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+<script>
+(function () {
+  "use strict";
+
+  var STORAGE_KEY = "georrery.geojson";
+
+  var SAMPLE_GEOJSON = {
+    "type": "FeatureCollection",
+    "features": [
+      {
+        "type": "Feature",
+        "properties": { "name": "Null Island" },
+        "geometry": { "type": "Point", "coordinates": [0, 0] }
+      },
+      {
+        "type": "Feature",
+        "properties": { "name": "Sample Area" },
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [[[-10, 35], [10, 35], [10, 50], [-10, 50], [-10, 35]]]
+        }
+      }
+    ]
+  };
+
+  var map = L.map("map", {
+    worldCopyJump: true,
+    attributionControl: true
+  }).setView([20, 0], 2);
+
+  L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+    maxZoom: 17,
+    attribution:
+      'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, ' +
+      '<a href="http://viewfinderpanoramas.org">SRTM</a> | ' +
+      'Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> ' +
+      '(<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)'
+  }).addTo(map);
+
+  var panel      = document.getElementById("panel");
+  var panelBar   = document.getElementById("panel-bar");
+  var statusEl   = document.getElementById("panel-status");
+  var textarea   = document.getElementById("geojson-input");
+  var dataLayer  = null;
+
+  function setStatus(text, isError) {
+    statusEl.textContent = text;
+    statusEl.classList.toggle("error", !!isError);
+  }
+
+  function renderGeoJSON(text) {
+    var data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      setStatus("Invalid JSON: " + e.message, true);
+      return;
+    }
+    try {
+      if (dataLayer) {
+        map.removeLayer(dataLayer);
+        dataLayer = null;
+      }
+      dataLayer = L.geoJSON(data, {
+        style: function () {
+          return { color: "#0284c7", weight: 2, fillOpacity: 0.25 };
+        },
+        pointToLayer: function (_feature, latlng) {
+          return L.circleMarker(latlng, {
+            radius: 6, color: "#0284c7", weight: 2, fillOpacity: 0.5
+          });
+        },
+        onEachFeature: function (feature, layer) {
+          if (feature.properties && feature.properties.name) {
+            layer.bindPopup(feature.properties.name);
+          }
+        }
+      }).addTo(map);
+      var count = dataLayer.getLayers().length;
+      setStatus(count + " feature" + (count === 1 ? "" : "s") + " rendered", false);
+    } catch (e) {
+      setStatus("Invalid GeoJSON: " + e.message, true);
+    }
+  }
+
+  var saveTimer = null;
+  function onInput() {
+    var text = textarea.value;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      try { localStorage.setItem(STORAGE_KEY, text); } catch (e) { /* storage full/unavailable */ }
+    }, 300);
+    renderGeoJSON(text);
+  }
+
+  panelBar.addEventListener("click", function () {
+    panel.classList.toggle("open");
+    if (panel.classList.contains("open")) {
+      textarea.focus();
+    }
+  });
+
+  textarea.addEventListener("input", onInput);
+  textarea.addEventListener("keydown", function (e) {
+    e.stopPropagation(); // keep Leaflet keyboard shortcuts from firing while typing
+  });
+
+  window.addEventListener("pagehide", function () {
+    clearTimeout(saveTimer);
+    try { localStorage.setItem(STORAGE_KEY, textarea.value); } catch (e) { /* ignore */ }
+  });
+
+  // Init: load persisted GeoJSON, else seed a sample. Map stays zoomed to world.
+  var saved = null;
+  try { saved = localStorage.getItem(STORAGE_KEY); } catch (e) { /* ignore */ }
+  var initial = (saved !== null && saved !== "") ? saved : JSON.stringify(SAMPLE_GEOJSON, null, 2);
+  textarea.value = initial;
+  renderGeoJSON(initial);
+})();
+</script>
+</body>
+</html>
