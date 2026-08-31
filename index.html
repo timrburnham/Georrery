@@ -94,7 +94,7 @@
     left: 12px;
     /* sits above the Leaflet attribution bar, which is measured live
        (--attribution-h set by JS) since its text can wrap */
-    bottom: calc(var(--attribution-h, 16px) + 12px);
+    bottom: calc(var(--attribution-h, 16px) + 4px);
     z-index: 1000;
     display: flex;
     flex-direction: column;
@@ -212,6 +212,109 @@
 
   .CodeMirror-linenumber { color: #94a3b8; }
 
+  .range-stack input[type="range"]::-moz-range-track { background: transparent; }
+
+  .time-labels {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 2px;
+    color: #64748b;
+  }
+
+  .feat-popup .popup-time {
+    display: block;
+    margin-top: 2px;
+    color: #64748b;
+    font-size: .85em;
+  }
+
+  /* ---- time filter card ---- */
+  .time-card {
+    background: rgba(255,255,255,.95);
+    backdrop-filter: blur(6px);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.25);
+    padding: 8px 10px;
+    font-size: .75rem;
+    color: #1e293b;
+    width: 230px;
+  }
+
+  .time-card .time-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+
+  .time-card button {
+    font-size: .7rem;
+    border: 1px solid #cbd5e1;
+    background: #f8fafc;
+    border-radius: 6px;
+    padding: 2px 8px;
+    cursor: pointer;
+    color: #1e293b;
+  }
+
+  .time-card button.active {
+    background: #7c3aed;
+    border-color: #7c3aed;
+    color: #fff;
+  }
+
+  .range-stack { position: relative; height: 20px; }
+
+  .range-stack .range-track,
+  .range-stack .range-fill {
+    position: absolute;
+    top: 50%;
+    height: 4px;
+    transform: translateY(-50%);
+    border-radius: 2px;
+    pointer-events: none;
+  }
+
+  .range-stack .range-track { left: 0; right: 0; background: #cbd5e1; }
+  .range-stack .range-fill { background: #7c3aed; }
+
+  .range-stack input[type="range"] {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 20px;
+    margin: 0;
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    pointer-events: none;   /* only the thumbs catch the pointer */
+  }
+
+  .range-stack input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    pointer-events: auto;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #7c3aed;
+    border: 2px solid #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,.35);
+    cursor: pointer;
+  }
+
+  .range-stack input[type="range"]::-moz-range-thumb {
+    pointer-events: auto;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #7c3aed;
+    border: 2px solid #fff;
+    cursor: pointer;
+  }
+
   /* fallback when CodeMirror fails to load */
   #geojson-input {
     width: 100%;
@@ -271,6 +374,9 @@
 <script src="https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.20.0/dist/leaflet-geoman.js"
         integrity="sha512-BiIrkmwG5bdOa1AWTMFAI9I5ab/qQd6tdhQLEmawFYfT0YlR77V/l2Jvel3k8hA45PwV9V4JcXC6TjDFkSV1XA=="
         crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet.timeline@1.6.0/dist/leaflet.timeline.js"
+        integrity="sha512-jGt9VJboJ1EExMlEDjqoZRZ2Te57YYG6iFs4grBsSzbV5bytERwY+Hh6fff4k/xZmTgPbk+xZfmMyYH6mg47Dw=="
+        crossorigin="anonymous"></script>
 <!-- cdnjs's precompressed brotli copy of codemirror.min.js 5.65.21 is out of sync
      (different bytes than the plain file), which breaks SRI in browsers that
      negotiate brotli - this file is served from jsDelivr instead. -->
@@ -304,12 +410,12 @@
     "features": [
       {
         "type": "Feature",
-        "properties": { "name": "Null Island" },
+        "properties": { "name": "Null Island", "datetime": "1920?" },
         "geometry": { "type": "Point", "coordinates": [0, 0] }
       },
       {
         "type": "Feature",
-        "properties": { "name": "Sample Area" },
+        "properties": { "name": "Sample Area", "start": "1850", "end": "1941" },
         "geometry": {
           "type": "Polygon",
           "coordinates": [[[-10, 35], [10, 35], [10, 50], [-10, 50], [-10, 35]]]
@@ -367,11 +473,13 @@
         });
       },
       onEachFeature: function (feature, layer) {
-        if (feature.properties && feature.properties.name) {
-          layer.bindPopup(feature.properties.name);
-        }
+        var html = popupHtml(feature);
+        if (html) { layer.bindPopup(html, { className: "feat-popup" }); }
       }
-  }).addTo(map);
+    }).addTo(map);
+    rebuildTimeIndex();
+    if (playbackOn) { setPlayback(true); } // rebuild playback from fresh layers
+  }
 
   // ---- Keep the GeoJSON panel clear of the attribution bar ----
   // The attribution bar (bottom-right of the map) can wrap to several lines
@@ -483,7 +591,6 @@
     overlaySelect.value = saved;
     if (saved) { setOverlay(saved); }
   })();
-  }
 
   function parseEditor() {
     var text = editorValue();
@@ -519,6 +626,265 @@
       refreshStatus();
     }, 300);
   }
+
+  // ---- Temporal features: fuzzy-date popups, range filter, playback ----
+  // Time lives in properties as ISO 8601 / EDTF strings: "datetime" for an
+  // instant ("1920", "2020-03~") or "start"/"end" for a range ("../.." open
+  // bounds allowed). RFC 7946 lets properties hold arbitrary JSON; EDTF is
+  // the Library of Congress fuzzy-date spec (ISO 8601-2 profile).
+  var MIN_MS = -62135596800000;  // year 1
+  var MAX_MS = 253402300799999;  // year 9999
+  var timeIndex = null;
+  var playbackOn = false;
+  var tlLayer = null;
+  var tlControl = null;
+  var timeUI = {};
+  var timeFilter = { lo: MIN_MS, hi: MAX_MS };
+
+  // Level-0 fallback: "YYYY", "YYYY-MM", "YYYY-MM-DD" and "a/b" intervals.
+  function basicEdtfBounds(s) {
+    s = String(s).trim();
+    var one = function (t) {
+      var m = /^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$/.exec(t);
+      if (!m) { return null; }
+      var y = +m[1];
+      if (!m[2]) { return { min: Date.UTC(y, 0, 1), max: Date.UTC(y, 11, 31, 23, 59, 59, 999) }; }
+      if (!m[3]) { return { min: Date.UTC(y, m[2] - 1, 1), max: Date.UTC(y, m[2], 0, 23, 59, 59, 999) }; }
+      var ms = Date.UTC(y, m[2] - 1, m[3]);
+      return { min: ms, max: ms + 86399999 };
+    };
+    var parts = s.split("/");
+    if (parts.length === 1) { return one(parts[0]); }
+    var a = (parts[0] === "" || parts[0] === "..") ? null : one(parts[0]);
+    var b = (parts[1] === "" || parts[1] === "..") ? null : one(parts[1]);
+    if (!a && !b) { return null; }
+    return { min: a ? a.min : -Infinity, max: b ? b.max : Infinity };
+  }
+
+  var parseEdtf = basicEdtfBounds;
+
+  // Upgrade to full EDTF (fuzzy "2020~", "200X", "?" uncertainty, ...) when
+  // the library is reachable; the fallback parser keeps the app usable offline.
+  import("https://cdn.jsdelivr.net/npm/edtf@4/+esm")
+    .then(function (mod) {
+      var edtf = mod.default || mod.edtf;
+      if (typeof edtf !== "function") { return; }
+      parseEdtf = function (s) {
+        try {
+          var d = edtf(String(s));
+          if (!d || d.min == null || d.max == null) { return null; }
+          return { min: +d.min, max: +d.max };
+        } catch (e) { return null; }
+      };
+      rebuildTimeIndex();   // re-index with full fuzz support
+      if (playbackOn) { setPlayback(true); }
+    })
+    .catch(function () { /* keep the fallback parser */ });
+
+  function clampMs(v, fallback) {
+    if (v === -Infinity || v < MIN_MS) { return MIN_MS; }
+    if (v === Infinity || v > MAX_MS) { return MAX_MS; }
+    return isFinite(v) ? v : fallback;
+  }
+
+  function featureInterval(props) {
+    var one = function (v) {
+      if (v == null || v === "") { return null; }
+      if (typeof v === "number" && isFinite(v)) { return { min: v, max: v }; }
+      var r = parseEdtf(v);
+      return r ? { min: clampMs(r.min, r.min), max: clampMs(r.max, r.max) } : null;
+    };
+    var a = one(props.datetime);
+    if (a) { return a; }
+    var s = one(props.start);
+    var e = one(props.end);
+    if (!s && !e) { return null; }
+    return {
+      min: s ? s.min : (e ? e.min : MIN_MS),
+      max: e ? e.max : (s ? s.max : MAX_MS)
+    };
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function describeTimeRaw(p) {
+    var bits = [];
+    if (p.datetime) { bits.push(String(p.datetime)); }
+    if (p.start || p.end) { bits.push(String(p.start || "...") + " - " + String(p.end || "...")); }
+    return bits.join(" | ");
+  }
+
+  function popupHtml(feature) {
+    var p = (feature && feature.properties) || {};
+    var html = "";
+    if (p.name) { html += "<strong>" + escapeHtml(String(p.name)) + "</strong>"; }
+    var t = describeTimeRaw(p);
+    if (t) { html += (html ? "<br>" : "") + '<span class="popup-time">' + escapeHtml(t) + "</span>"; }
+    return html;
+  }
+
+  function setVisible(layer, visible) {
+    if (layer.getLayers) {          // Multi* geometries arrive as groups
+      layer.getLayers().forEach(function (l) { setVisible(l, visible); });
+      return;
+    }
+    if (layer.getElement) {
+      var el = layer.getElement();
+      if (el) { el.style.display = visible ? "" : "none"; }
+    }
+  }
+
+  function formatMs(ms) {
+    if (!isFinite(ms)) { return "..."; }
+    var d = new Date(ms);
+    var span = timeIndex ? timeIndex.max - timeIndex.min : 0;
+    if (span > 3 * 366 * 864e5) { return String(d.getUTCFullYear()); }
+    return d.toISOString().slice(0, 10);
+  }
+
+  function sliderToMs(v) {
+    return timeIndex.min + (v / 1000) * (timeIndex.max - timeIndex.min);
+  }
+
+  function updateTimeFilterUI() {
+    if (!timeIndex || !timeIndex.items.length || !timeUI.card) { return; }
+    var lo = sliderToMs(+timeUI.lo.value);
+    var hi = sliderToMs(+timeUI.hi.value);
+    timeFilter.lo = lo;
+    timeFilter.hi = hi;
+    var span = Math.max(1, timeIndex.max - timeIndex.min);
+    timeUI.fill.style.left = (100 * (lo - timeIndex.min) / span) + "%";
+    timeUI.fill.style.right = (100 - 100 * (hi - timeIndex.min) / span) + "%";
+    timeUI.loLabel.textContent = formatMs(lo);
+    timeUI.hiLabel.textContent = formatMs(hi);
+    applyTimeFilter();
+  }
+
+  function onLoInput() {
+    if (+timeUI.lo.value > +timeUI.hi.value) { timeUI.lo.value = timeUI.hi.value; }
+    updateTimeFilterUI();
+  }
+
+  function onHiInput() {
+    if (+timeUI.hi.value < +timeUI.lo.value) { timeUI.hi.value = timeUI.lo.value; }
+    updateTimeFilterUI();
+  }
+
+  function applyTimeFilter() {
+    if (!timeIndex) { return; }
+    dataLayer.getLayers().forEach(function (layer) {
+      var iv = timeIndex.byLayer.get(layer);
+      var visible = true;
+      if (iv) {
+        // during playback the timeline layer owns the temporal features
+        visible = playbackOn ? false : (iv.min <= timeFilter.hi && iv.max >= timeFilter.lo);
+      }
+      setVisible(layer, visible);
+    });
+  }
+
+  function rebuildTimeIndex() {
+    var prevMin = timeIndex ? timeIndex.min : null;
+    var prevMax = timeIndex ? timeIndex.max : null;
+    timeIndex = { items: [], byLayer: new Map(), min: Infinity, max: -Infinity };
+    if (!dataLayer) { return; }
+    dataLayer.getLayers().forEach(function (layer) {
+      var f = layer.feature || null;
+      var iv = f ? featureInterval(f.properties || {}) : null;
+      timeIndex.byLayer.set(layer, iv);
+      if (f && iv) {
+        f.__interval = iv;
+        timeIndex.items.push({ layer: layer, feature: f, interval: iv });
+        if (iv.min < timeIndex.min) { timeIndex.min = iv.min; }
+        if (iv.max > timeIndex.max) { timeIndex.max = iv.max; }
+      }
+    });
+    var has = timeIndex.items.length > 0;
+    timeUI.card.style.display = has ? "" : "none";
+    if (has) {
+      if (timeIndex.min !== prevMin || timeIndex.max !== prevMax) {
+        timeUI.lo.value = 0;      // domain changed -> reset the filter window
+        timeUI.hi.value = 1000;
+      }
+      updateTimeFilterUI();
+    } else if (playbackOn) {
+      setPlayback(false);
+    }
+  }
+
+  function setPlayback(on) {
+    playbackOn = on;
+    if (tlControl) { map.removeControl(tlControl); tlControl = null; }
+    if (tlLayer) { map.removeLayer(tlLayer); tlLayer = null; }
+    if (on && timeIndex && timeIndex.items.length) {
+      var fc = {
+        type: "FeatureCollection",
+        features: timeIndex.items.map(function (it) { return it.feature; })
+      };
+      tlLayer = L.timeline(fc, {
+        pmIgnore: true,           // keep Geoman off the playback copies
+        getInterval: function (f) {
+          return f.__interval ? { start: f.__interval.min, end: f.__interval.max } : false;
+        },
+        style: function () { return { color: "#7c3aed", weight: 2, fillOpacity: 0.25 }; },
+        pointToLayer: function (_feature, latlng) {
+          return L.circleMarker(latlng, {
+            radius: 6, color: "#7c3aed", weight: 2, fillOpacity: 0.5
+          });
+        },
+        onEachFeature: function (feature, layer) {
+          var html = popupHtml(feature);
+          if (html) { layer.bindPopup(html, { className: "feat-popup" }); }
+        }
+      });
+      tlControl = L.timelineSliderControl({
+        position: "topright",
+        formatOutput: formatMs,
+        autoPlay: false
+      });
+      tlLayer.addTo(map);
+      tlControl.addTo(map);
+      tlControl.addTimelines(tlLayer);
+    }
+    timeUI.playBtn.textContent = on ? "Playback: on" : "Playback: off";
+    timeUI.playBtn.classList.toggle("active", on);
+    applyTimeFilter();
+  }
+
+  var TimeFilterControl = L.Control.extend({
+    options: { position: "topright" },
+    onAdd: function () {
+      var root = L.DomUtil.create("div", "time-card");
+      root.style.display = "none";
+      root.innerHTML =
+        '<div class="time-head"><span>Time filter</span>' +
+        '<button type="button" class="playback-toggle">Playback: off</button></div>' +
+        '<div class="range-stack">' +
+        '<div class="range-track"></div><div class="range-fill"></div>' +
+        '<input type="range" min="0" max="1000" value="0" aria-label="Filter start time">' +
+        '<input type="range" min="0" max="1000" value="1000" aria-label="Filter end time">' +
+        "</div>" +
+        '<div class="time-labels"><span class="lo-label"></span><span class="hi-label"></span></div>';
+      timeUI.card = root;
+      timeUI.lo = root.querySelectorAll("input")[0];
+      timeUI.hi = root.querySelectorAll("input")[1];
+      timeUI.fill = root.querySelector(".range-fill");
+      timeUI.loLabel = root.querySelector(".lo-label");
+      timeUI.hiLabel = root.querySelector(".hi-label");
+      timeUI.playBtn = root.querySelector(".playback-toggle");
+      timeUI.lo.addEventListener("input", onLoInput);
+      timeUI.hi.addEventListener("input", onHiInput);
+      timeUI.playBtn.addEventListener("click", function () { setPlayback(!playbackOn); });
+      L.DomEvent.disableClickPropagation(root);
+      L.DomEvent.disableScrollPropagation(root);
+      return root;
+    }
+  });
+  map.addControl(new TimeFilterControl());
 
   // Load persisted GeoJSON (or a sample) into the textarea before CM takes over.
   var saved = null;
@@ -676,6 +1042,7 @@
     lastRendered = text;
     saveNow();
     refreshStatus();
+    rebuildTimeIndex(); // cuts/removals change the layer set behind the map's back
   }
 
   function scheduleMapSync() {
