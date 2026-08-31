@@ -294,8 +294,6 @@
 (function () {
   "use strict";
 
-  var STORAGE_KEY = "georrery.geojson";
-
   var SAMPLE_GEOJSON = {
     "type": "FeatureCollection",
     "features": [
@@ -370,8 +368,39 @@
       }
   }).addTo(map);
 
+  // ---- Remembered map view ----
+  // Saved a few seconds after you stop moving - never live per-frame/pan-step.
+  function saveView() {
+    try {
+      var c = map.getCenter();
+      localStorage.setItem("georrery.view", JSON.stringify({
+        lat: Math.round(c.lat * 1e5) / 1e5,
+        lng: Math.round(c.lng * 1e5) / 1e5,
+        zoom: map.getZoom()
+      }));
+    } catch (e) { /* ignore */ }
+  }
+
+  function restoreView() {
+    try {
+      var v = JSON.parse(localStorage.getItem("georrery.view"));
+      if (v && isFinite(v.lat) && isFinite(v.lng) && isFinite(v.zoom)) {
+        map.setView([v.lat, v.lng], Math.max(0, Math.min(17, Math.round(v.zoom))), { animate: false });
+        return true;
+      }
+    } catch (e) { /* ignore */ }
+    return false;
+  }
+
+  restoreView(); // no saved view yet? the constructor's world view stands
+
+  var viewSaveTimer = null;
+  map.on("moveend zoomend", function () {
+    clearTimeout(viewSaveTimer);
+    viewSaveTimer = setTimeout(saveView, 3000); // one write per settled view
+  });
+
   // ---- Overlay selection (header drop-down, single choice) ----
-  var OVERLAY_STORAGE_KEY = "georrery.overlay";
   var OVERLAYS = {
     "wmt-hiking": {
       url: "https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png", maxZoom: 18,
@@ -418,7 +447,7 @@
         attribution: def.attribution
       }).addTo(map);
     }
-    try { localStorage.setItem(OVERLAY_STORAGE_KEY, id || ""); } catch (e) { /* ignore */ }
+    try { localStorage.setItem("georrery.overlay", id || ""); } catch (e) { /* ignore */ }
   }
 
   overlaySelect.addEventListener("change", function () {
@@ -427,7 +456,7 @@
 
   (function restoreOverlay() {
     var saved = "";
-    try { saved = localStorage.getItem(OVERLAY_STORAGE_KEY) || ""; } catch (e) { /* ignore */ }
+    try { saved = localStorage.getItem("georrery.overlay") || ""; } catch (e) { /* ignore */ }
     if (!OVERLAYS[saved]) { saved = ""; }
     overlaySelect.value = saved;
     if (saved) { setOverlay(saved); }
@@ -457,7 +486,7 @@
   }
 
   function saveNow() {
-    try { localStorage.setItem(STORAGE_KEY, editorValue()); } catch (e) { /* storage full/unavailable */ }
+    try { localStorage.setItem("georrery.geojson", editorValue()); } catch (e) { /* storage full/unavailable */ }
   }
 
   var syncTimer = null;
@@ -471,7 +500,7 @@
 
   // Load persisted GeoJSON (or a sample) into the textarea before CM takes over.
   var saved = null;
-  try { saved = localStorage.getItem(STORAGE_KEY); } catch (e) { /* ignore */ }
+  try { saved = localStorage.getItem("georrery.geojson"); } catch (e) { /* ignore */ }
   textarea.value = (saved !== null && saved !== "")
     ? saved
     : JSON.stringify(SAMPLE_GEOJSON, null, 2);
@@ -608,7 +637,9 @@
 
   window.addEventListener("pagehide", function () {
     clearTimeout(syncTimer);
+    clearTimeout(viewSaveTimer);
     saveNow();
+    saveView();
   });
 })();
 </script>
