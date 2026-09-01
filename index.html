@@ -34,13 +34,46 @@
   header {
     flex: 0 0 auto;
     height: 48px;
-    display: flex;
-    align-items: center;
-    padding: 0 16px;
     background: #1e293b;
     color: #f1f5f9;
     box-shadow: 0 2px 8px rgba(0,0,0,.35);
     z-index: 1000;
+    overflow: hidden;
+  }
+
+  /* Reset, brand, and the Layers dropdown are one rigid strip, wider than
+     the header by the Reset button plus one margin. Closed, the strip sits
+     shifted left: the button parks exactly offscreen while the title and
+     dropdown keep the normal 16px side margins. Open, the whole strip
+     slides right - the button lands on the left margin and the dropdown
+     slides out of view over the right edge. --header-shift is measured by
+     JS (button width + 16px). */
+  #header-strip {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    height: 100%;
+    padding: 0 16px;
+    width: calc(100% + var(--header-shift, 78px));
+    transform: translateX(calc(-1 * var(--header-shift, 78px)));
+    transition: transform .3s ease;
+  }
+
+  header.menu-open #header-strip { transform: translateX(0); }
+
+  #reset-btn {
+    border: 1px solid #475569;
+    background: #334155;
+    color: #f1f5f9;
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: .8rem;
+    cursor: pointer;
+  }
+
+  #reset-btn:hover {
+    background: #dc2626;
+    border-color: #dc2626;
   }
 
   header h1 {
@@ -52,38 +85,6 @@
   }
 
   header h1:hover span { color: #7dd3fc; }
-
-  /* slides open to the left of the brand name */
-  #menu-buttons {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    max-width: 0;
-    opacity: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    transition: max-width .3s ease, opacity .25s ease, padding-right .3s ease;
-  }
-
-  /* Open-state padding-right keeps the title exactly one header side-margin
-     (16px) away from the button - the same distance it keeps from the header
-     edge when closed. Collapsed stays width-0, so nothing else moves. */
-  header.menu-open #menu-buttons { max-width: 170px; opacity: 1; padding-right: 16px; }
-
-  #menu-buttons button {
-    border: 1px solid #475569;
-    background: #334155;
-    color: #f1f5f9;
-    border-radius: 6px;
-    padding: 4px 12px;
-    font-size: .8rem;
-    cursor: pointer;
-  }
-
-  #menu-buttons button:hover {
-    background: #dc2626;
-    border-color: #dc2626;
-  }
 
   header h1 span { color: #38bdf8; }
 
@@ -466,25 +467,25 @@
 <body>
 
 <header>
-  <div id="menu-buttons">
+  <div id="header-strip">
     <button type="button" id="reset-btn" title="Clear all locally stored data and the GeoJSON text">Reset</button>
-  </div>
-  <h1 id="brand" title="Show menu">Geo<span>rrery</span></h1>
-  <div id="overlay-select-wrap">
-    <select id="overlay-select" aria-label="Map overlay">
-      <option value="">No Overlay</option>
-      <optgroup label="Waymarked Trails">
-        <option value="wmt-hiking">Hiking routes</option>
-        <option value="wmt-cycling">Cycling routes</option>
-        <option value="wmt-mtb">MTB routes</option>
-        <option value="wmt-skating">Skating routes</option>
-        <option value="wmt-riding">Riding routes</option>
-        <option value="wmt-winter">Winter routes</option>
-      </optgroup>
-      <optgroup label="OpenSeaMap">
-        <option value="oseam-seamark">Sea marks</option>
-      </optgroup>
-    </select>
+    <h1 id="brand" title="Show menu">Geo<span>rrery</span></h1>
+    <div id="overlay-select-wrap">
+      <select id="overlay-select" aria-label="Map overlay">
+        <option value="">No Overlay</option>
+        <optgroup label="Waymarked Trails">
+          <option value="wmt-hiking">Hiking routes</option>
+          <option value="wmt-cycling">Cycling routes</option>
+          <option value="wmt-mtb">MTB routes</option>
+          <option value="wmt-skating">Skating routes</option>
+          <option value="wmt-riding">Riding routes</option>
+          <option value="wmt-winter">Winter routes</option>
+        </optgroup>
+        <optgroup label="OpenSeaMap">
+          <option value="oseam-seamark">Sea marks</option>
+        </optgroup>
+      </select>
+    </div>
   </div>
 </header>
 
@@ -568,6 +569,7 @@
   const textarea = document.getElementById("geojson-input");
   const brand = document.getElementById("brand");
   const header = document.querySelector("header");
+  const resetBtn = document.getElementById("reset-btn");
 
   let dataLayer = null;       // the FeatureCollection currently drawn on the map
   let lastRendered = null;    // editor text that matches what the map shows
@@ -1173,7 +1175,14 @@
     if (panel.classList.contains("open")) { collapsePanel(); } else { openPanel(); }
   });
 
-  // ---- Header menu: brand click slides the name right, revealing buttons ----
+  // ---- Header menu: brand click slides the whole strip right, trading the
+  // Layers dropdown (out over the right edge) for the Reset button (in at
+  // the left margin). Shift = one side margin (16) + the button width, so
+  // the closed state parks the button exactly offscreen. ----
+  document.documentElement.style.setProperty(
+    "--header-shift", `${resetBtn.offsetWidth + 16}px`
+  );
+
   brand.addEventListener("click", () => header.classList.toggle("menu-open"));
 
   function resetAll() {
@@ -1188,7 +1197,7 @@
     openPanel();
   }
 
-  document.getElementById("reset-btn").addEventListener("click", e => {
+  resetBtn.addEventListener("click", e => {
     e.stopPropagation();
     resetAll();
     header.classList.remove("menu-open");
