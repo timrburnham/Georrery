@@ -449,6 +449,120 @@
     cursor: pointer;
   }
 
+  /* ---- playback bar (L.timelineSliderControl) ---- */
+  /* The control injects its own minimal stylesheet at runtime: a 15%-wide
+     floated button column of four empty 8px buttons beside an 80% slider -
+     hence the scrunched look. Rebuild it as a two-row card matching the
+     .time-card above it: buttons + readout on top, full-width slider below.
+     Overrides are scoped with .leaflet-top.leaflet-right so they outrank the
+     injected rules (which land after this <style>) without !important. The
+     injected .playing class still swaps the play/pause buttons. */
+  .leaflet-top.leaflet-right .leaflet-timeline-control {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 230px;
+    margin: 0 10px 0 0;
+    padding: 8px 10px;
+    background: rgba(255,255,255,.95);
+    backdrop-filter: blur(6px);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.25);
+  }
+
+  .leaflet-top.leaflet-right .leaflet-timeline-control .sldr-ctrl-container {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    float: none;
+    width: 100%;
+  }
+
+  .leaflet-top.leaflet-right .leaflet-timeline-control .button-container {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .leaflet-top.leaflet-right .leaflet-timeline-control .button-container button {
+    position: relative;
+    width: 26px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #f8fafc;
+    cursor: pointer;
+  }
+
+  .leaflet-top.leaflet-right .leaflet-timeline-control .button-container button:hover {
+    background: #ede9fe;
+    border-color: #7c3aed;
+  }
+
+  /* glyphs: the buttons ship empty; anchor both pseudos dead center and
+     draw the icons with border triangles (dark slate, like .time-card) */
+  .leaflet-top.leaflet-right .leaflet-timeline-control .button-container button::before,
+  .leaflet-top.leaflet-right .leaflet-timeline-control .button-container button::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border: 0 solid transparent;
+  }
+
+  .leaflet-top.leaflet-right .leaflet-timeline-control .button-container button.play::before {
+    border-width: 7px 0 7px 10px;
+    border-left-color: #1e293b;
+    margin: -7px 0 0 -5px;
+  }
+
+  .leaflet-top.leaflet-right .leaflet-timeline-control .button-container button.pause::before {
+    width: 3px;
+    height: 13px;
+    background: #1e293b;
+    box-shadow: 6px 0 0 #1e293b;
+    margin: -6.5px 0 0 -4.5px;
+  }
+
+  .leaflet-top.leaflet-right .leaflet-timeline-control .button-container button.prev::before,
+  .leaflet-top.leaflet-right .leaflet-timeline-control .button-container button.next::before {
+    width: 2px;
+    height: 13px;
+    background: #1e293b;
+  }
+
+  .leaflet-top.leaflet-right .leaflet-timeline-control .button-container button.prev::before { margin: -6.5px 0 0 -6.5px; }
+
+  .leaflet-top.leaflet-right .leaflet-timeline-control .button-container button.prev::after {
+    border-width: 6.5px 9px 6.5px 0;
+    border-right-color: #1e293b;
+    margin: -6.5px 0 0 -4.5px;
+  }
+
+  .leaflet-top.leaflet-right .leaflet-timeline-control .button-container button.next::before { margin: -6.5px 0 0 4.5px; }
+
+  .leaflet-top.leaflet-right .leaflet-timeline-control .button-container button.next::after {
+    border-width: 6.5px 0 6.5px 9px;
+    border-left-color: #1e293b;
+    margin: -6.5px 0 0 -4.5px;
+  }
+
+  .leaflet-top.leaflet-right .leaflet-timeline-control input.time-slider {
+    width: 100%;
+    margin: 0;
+    accent-color: #7c3aed;
+  }
+
+  .leaflet-top.leaflet-right .leaflet-timeline-control .time-text {
+    font-size: .75rem;
+    font-weight: 600;
+    color: #1e293b;
+  }
+
   /* fallback when CodeMirror fails to load */
   #geojson-input {
     width: 100%;
