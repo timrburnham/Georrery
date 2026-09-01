@@ -722,7 +722,6 @@
       onEachFeature: (feature, layer) => {
         if (wireGeoman) {
           wireGeomanSync(layer);
-          layer.on("click", e => selectFeature(layer, e.latlng)); // opens the details card
         } else {
           const html = popupHtml(feature); // read-only summary on playback copies
           if (html) { layer.bindPopup(html, { className: "feat-popup" }); }
@@ -989,6 +988,9 @@
       timeIndex.byLayer.set(layer, iv);
       if (f && iv) {
         f.__interval = iv; // read back by L.timeline's getInterval
+        // Redshift candidate: a true start/end range (not a datetime
+        // instant, not an open-ended range)
+        f.__range = Boolean((f.properties || {}).start && (f.properties || {}).end);
         timeIndex.items.push({ layer, feature: f, interval: iv });
         if (iv.min < timeIndex.min) { timeIndex.min = iv.min; }
         if (iv.max > timeIndex.max) { timeIndex.max = iv.max; }
@@ -1007,19 +1009,50 @@
     }
   }
 
+  // ---- Redshift: range features sweep the spectrum across their lifetime ----
+  // While playback runs, features carrying both "start" and "end" are
+  // colored by how far the playhead is through their own interval (a
+  // "datetime" alongside start/end is ignored - the range drives it).
+  // Hue walks the visible spectrum from bright red (0deg) through orange,
+  // yellow, green, and cyan to just-barely violet past blue; instants and
+  // open ranges keep the static playback color.
+  const REDSHIFT_MAX_HUE = 260; // pure blue is 240; 260 barely tips into violet
+
+  function redshiftColor(min, max, t) {
+    const p = max > min ? Math.min(Math.max((t - min) / (max - min), 0), 1) : 0;
+    return `hsl(${Math.round(p * REDSHIFT_MAX_HUE)}, 100%, 50%)`;
+  }
+
+  function applyRedshift(t) {
+    if (!tlLayer) { return; }
+    tlLayer.eachLayer(layer => {
+      const f = layer.feature;
+      if (f && f.__range && f.__interval) {
+        layer.setStyle({ color: redshiftColor(f.__interval.min, f.__interval.max, t) });
+      }
+    });
+  }
+
   function setPlayback(on) {
     playbackOn = on;
     if (tlControl) { map.removeControl(tlControl); tlControl = null; }
     if (tlLayer) { map.removeLayer(tlLayer); tlLayer = null; }
     if (on && timeIndex && timeIndex.items.length) {
+      // Pad the playhead domain past the data so the bar can be parked
+      // before or after everything and filter the map empty either way.
+      const span = timeIndex.max - timeIndex.min;
+      const pad = span > 0 ? span * 0.05 : 3.156e10; // 5% of span, or ~1 year
       const fc = {
         type: "FeatureCollection",
         features: timeIndex.items.map(item => item.feature)
       };
       tlLayer = L.timeline(fc, Object.assign(layerOptions("#7c3aed", false), {
         pmIgnore: true,           // keep Geoman off the playback copies
+        start: timeIndex.min - pad,
+        end: timeIndex.max + pad,
         getInterval: f => f.__interval ? { start: f.__interval.min, end: f.__interval.max } : false
       }));
+      tlLayer.on("change", () => applyRedshift(tlLayer.time)); // every tick, after the reveal
       tlControl = L.timelineSliderControl({
         position: "topright",
         formatOutput: formatMs,
@@ -1117,12 +1150,48 @@
     closeDetails();
   }
 
+  // Cancel any active Geoman mode (draw in progress, edit, drag, rotate,
+  // cut, removal). Each call is a no-op when already inactive. Unlike
+  // setGeomanEnabled this is mode cleanup only - it must not touch the
+  // geojson-dirty state.
+  function cancelActiveModes() {
+    if (!map.pm) { return false; }
+    const pm = map.pm;
+    const active = pm.globalDrawModeEnabled() || pm.globalEditModeEnabled() ||
+      pm.globalDragModeEnabled() || pm.globalRemovalModeEnabled() ||
+      pm.globalRotateModeEnabled() || pm.globalCutModeEnabled();
+    if (!active) { return false; }
+    pm.Draw.disable();
+    pm.disableGlobalEditMode();
+    pm.disableGlobalDragMode();
+    pm.disableGlobalRemovalMode();
+    pm.disableGlobalRotateMode();
+    pm.disableGlobalCutMode();
+    return true;
+  }
+
   document.addEventListener("keydown", e => {
-    if (e.key !== "Enter" || e.isComposing || !selectedLayer) { return; }
+    if (e.isComposing) { return; }
     const t = e.target;
     if (t && t.closest && t.closest(".CodeMirror, #geojson-input")) { return; }
-    e.preventDefault();
-    commitDetails();
+    if (e.key === "Enter") {
+      if (e.defaultPrevented) { return; } // Geoman just committed an in-progress shape
+      // Enter dismisses the current overlay: a still-active Geoman mode
+      // (stop dropping more shapes) first, otherwise the details card.
+      if (cancelActiveModes()) { e.preventDefault(); return; }
+      if (!selectedLayer) { return; }
+      e.preventDefault();
+      commitDetails();
+      return;
+    }
+    // Space toggles the GeoJSON panel, unless focus is somewhere Space
+    // already means something (button re-click, input caret, select, ...).
+    // It opens without stealing the caret, so Space-Space closes again.
+    if (e.key === " " &&
+        !(t && t.closest && t.closest("button, input, select, textarea, a, [contenteditable]"))) {
+      e.preventDefault();
+      if (panel.classList.contains("open")) { collapsePanel(); } else { openPanel(false); }
+    }
   });
 
   function selectFeature(layer, latlng) {
@@ -1279,10 +1348,10 @@
     panel.addEventListener("transitionend", widthAnimHandler);
   }
 
-  function openPanel() {
+  function openPanel(focus = true) {
     if (!panel.classList.contains("open")) { expandPanel(); }
     setTimeout(() => { if (cm) { cm.refresh(); } }, 320); // after transition
-    (cm || textarea).focus();
+    if (focus) { (cm || textarea).focus(); }
   }
 
   panelBar.addEventListener("click", () => {
@@ -1368,6 +1437,7 @@
     // pm:edit / pm:dragend / pm:rotateend are LAYER events in Geoman (only
     // create/cut/remove fire on the map), so every feature gets its own listeners.
     layer.on("pm:edit pm:dragend pm:rotateend", scheduleMapSync);
+    layer.on("click", e => selectFeature(layer, e.latlng)); // opens the details card
   }
 
   function syncNow() {
@@ -1408,6 +1478,11 @@
       cutPolygon: true,
       removalMode: true
     });
+    // Geoman's native key exits are off by default: Escape cancels whatever
+    // mode is active; Enter commits a multi-point shape in progress (line,
+    // polygon, started rectangle) and keeps the mode running for the next
+    // one. Point-and-click tools (marker, ...) never commit on Enter.
+    map.pm.setGlobalOptions({ exitModeOnEscape: true, finishOnEnter: true });
 
     map.on("pm:create pm:cut", e => {
       if (!dataLayer) { renderData({ type: "FeatureCollection", features: [] }); }
