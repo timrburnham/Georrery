@@ -251,6 +251,12 @@
 
   .CodeMirror-linenumber { color: #94a3b8; }
 
+  /* ---- Geoman toolbar ---- */
+  /* While the GeoJSON text has unsaved edits it owns the data: the drawing
+     toolbar is hidden and active modes are cancelled (see setGeomanEnabled).
+     Panning and zooming stay available - only edits are parked. */
+  body.geojson-dirty .leaflet-pm-toolbar { display: none; }
+
   .range-stack input[type="range"]::-moz-range-track { background: transparent; }
 
   .time-labels {
@@ -445,20 +451,17 @@
         integrity="sha512-ynfHqOx3h/V0CDEdHKHdS4C0Kp5tcpILVbUOqNczDbRDiKqrMx3mONwyFHcMmOs43MMiGfD9gDjbvnQ5fOZxvw=="
         crossorigin="anonymous"></script>
 <script>
-(function () {
+(() => {
   "use strict";
 
   // LocalStorage keys - one topic per key, "georrery.<topic>" naming.
-  var GEOJSON_STORAGE_KEY = "georrery.geojson"; // editor contents
-  var OVERLAY_STORAGE_KEY = "georrery.overlay"; // selected map overlay
-  var VIEW_STORAGE_KEY = "georrery.view";       // last map position + zoom
+  const GEOJSON_STORAGE_KEY = "georrery.geojson"; // editor contents
+  const OVERLAY_STORAGE_KEY = "georrery.overlay"; // selected map overlay
+  const VIEW_STORAGE_KEY = "georrery.view";       // last map position + zoom
 
-  var EMPTY_GEOJSON_TEXT = JSON.stringify({ type: "FeatureCollection", features: [] }, null, 2);
+  const EMPTY_GEOJSON_TEXT = JSON.stringify({ type: "FeatureCollection", features: [] }, null, 2);
 
-  var map = L.map("map", {
-    worldCopyJump: true,
-    attributionControl: true
-  }).setView([20, 0], 2);
+  const map = L.map("map", { worldCopyJump: true }).setView([20, 0], 2);
 
   L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
     maxZoom: 17,
@@ -469,26 +472,55 @@
       '(<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)'
   }).addTo(map);
 
-  var panel     = document.getElementById("panel");
-  var panelBar  = document.getElementById("panel-bar");
-  var statusEl  = document.getElementById("panel-status");
-  var updateBtn = document.getElementById("update-btn");
-  var neverMindBtn = document.getElementById("nevermind-btn");
-  var textarea  = document.getElementById("geojson-input");
-  var brand     = document.getElementById("brand");
-  var dataLayer = null;
-  var lastRendered = null;
+  const panel = document.getElementById("panel");
+  const panelBar = document.getElementById("panel-bar");
+  const statusEl = document.getElementById("panel-status");
+  const updateBtn = document.getElementById("update-btn");
+  const neverMindBtn = document.getElementById("nevermind-btn");
+  const textarea = document.getElementById("geojson-input");
+  const brand = document.getElementById("brand");
+  const header = document.querySelector("header");
+
+  let dataLayer = null;       // the FeatureCollection currently drawn on the map
+  let lastRendered = null;    // editor text that matches what the map shows
+  let cm = null;              // CodeMirror instance (null -> plain textarea fallback)
+  let syncingFromMap = false; // suppresses onEdit during programmatic setValue
+  let statusTimer = 0;
+  let viewSaveTimer = 0;
+  let mapSyncTimer = 0;
 
   function setStatus(text, isError) {
     statusEl.textContent = text;
-    statusEl.classList.toggle("error", !!isError);
+    statusEl.classList.toggle("error", isError);
   }
 
-  function countFeatures(data) {
-    if (data && data.type === "FeatureCollection" && Array.isArray(data.features)) {
-      return data.features.length;
-    }
-    return 1;
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  function popupHtml(feature) {
+    const p = (feature && feature.properties) || {};
+    const bits = [];
+    if (p.datetime) { bits.push(String(p.datetime)); }
+    if (p.start || p.end) { bits.push(`${String(p.start || "...")} - ${String(p.end || "...")}`); }
+    let html = "";
+    if (p.name) { html += `<strong>${escapeHtml(String(p.name))}</strong>`; }
+    const t = bits.join(" | ");
+    if (t) { html += `${html ? "<br>" : ""}<span class="popup-time">${escapeHtml(t)}</span>`; }
+    return html;
+  }
+
+  // Shared L.GeoJSON / L.timeline options; wireGeoman adds the map-edit sync.
+  function layerOptions(color, wireGeoman) {
+    return {
+      style: () => ({ color, weight: 2, fillOpacity: 0.25 }),
+      pointToLayer: (_feature, latlng) => L.circleMarker(latlng, { radius: 6, color, weight: 2, fillOpacity: 0.5 }),
+      onEachFeature: (feature, layer) => {
+        if (wireGeoman) { wireGeomanSync(layer); }
+        const html = popupHtml(feature);
+        if (html) { layer.bindPopup(html, { className: "feat-popup" }); }
+      }
+    };
   }
 
   function renderData(data) {
@@ -496,21 +528,7 @@
       map.removeLayer(dataLayer);
       dataLayer = null;
     }
-    dataLayer = L.geoJSON(data, {
-      style: function () {
-        return { color: "#0284c7", weight: 2, fillOpacity: 0.25 };
-      },
-      pointToLayer: function (_feature, latlng) {
-        return L.circleMarker(latlng, {
-          radius: 6, color: "#0284c7", weight: 2, fillOpacity: 0.5
-        });
-      },
-      onEachFeature: function (feature, layer) {
-        wireGeomanSync(layer);
-        var html = popupHtml(feature);
-        if (html) { layer.bindPopup(html, { className: "feat-popup" }); }
-      }
-    }).addTo(map);
+    dataLayer = L.geoJSON(data, layerOptions("#0284c7", true)).addTo(map);
     rebuildTimeIndex();
     if (playbackOn) { setPlayback(true); } // rebuild playback from fresh layers
   }
@@ -518,92 +536,67 @@
   // ---- Keep the GeoJSON panel clear of the attribution bar ----
   // The attribution bar (bottom-right of the map) can wrap to several lines
   // on narrow screens or when overlay attributions are active, so measure it.
-  (function watchAttribution() {
-    var el = map.attributionControl.getContainer();
-    var apply = function () {
-      document.documentElement.style.setProperty(
-        "--attribution-h", el.offsetHeight + "px");
-    };
-    apply();
-    if (window.ResizeObserver) {
-      new ResizeObserver(apply).observe(el);
-    } else {
-      window.addEventListener("resize", apply);
-    }
-  })();
+  const attributionEl = map.attributionControl.getContainer();
+  const syncAttributionHeight = () =>
+    document.documentElement.style.setProperty("--attribution-h", `${attributionEl.offsetHeight}px`);
+  syncAttributionHeight();
+  if (window.ResizeObserver) {
+    new ResizeObserver(syncAttributionHeight).observe(attributionEl);
+  } else {
+    window.addEventListener("resize", syncAttributionHeight);
+  }
 
   // ---- Remembered map view ----
   // Saved a few seconds after you stop moving - never live per-frame/pan-step.
   function saveView() {
     try {
-      var c = map.getCenter();
+      const c = map.getCenter();
       localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify({
         lat: Math.round(c.lat * 1e5) / 1e5,
         lng: Math.round(c.lng * 1e5) / 1e5,
         zoom: map.getZoom()
       }));
-    } catch (e) { /* ignore */ }
+    } catch { /* ignore */ }
   }
 
-  function restoreView() {
-    try {
-      var v = JSON.parse(localStorage.getItem(VIEW_STORAGE_KEY));
-      if (v && isFinite(v.lat) && isFinite(v.lng) && isFinite(v.zoom)) {
-        map.setView([v.lat, v.lng], Math.max(0, Math.min(17, Math.round(v.zoom))), { animate: false });
-        return true;
-      }
-    } catch (e) { /* ignore */ }
-    return false;
-  }
+  try {
+    const v = JSON.parse(localStorage.getItem(VIEW_STORAGE_KEY));
+    if (v && isFinite(v.lat) && isFinite(v.lng) && isFinite(v.zoom)) {
+      map.setView([v.lat, v.lng], Math.max(0, Math.min(17, Math.round(v.zoom))), { animate: false });
+    }
+  } catch { /* no saved view yet? the constructor's world view stands */ }
 
-  restoreView(); // no saved view yet? the constructor's world view stands
-
-  var viewSaveTimer = null;
-  map.on("moveend zoomend", function () {
+  map.on("moveend zoomend", () => {
     clearTimeout(viewSaveTimer);
     viewSaveTimer = setTimeout(saveView, 3000); // one write per settled view
   });
 
   // ---- Overlay selection (header drop-down, single choice) ----
-  var OVERLAYS = {
-    "wmt-hiking": {
-      url: "https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png", maxZoom: 18,
-      attribution: "Routes: &copy; <a href='https://waymarkedtrails.org'>waymarkedtrails.org</a> (CC-BY-SA)"
-    },
-    "wmt-cycling": {
-      url: "https://tile.waymarkedtrails.org/cycling/{z}/{x}/{y}.png", maxZoom: 18,
-      attribution: "Routes: &copy; <a href='https://waymarkedtrails.org'>waymarkedtrails.org</a> (CC-BY-SA)"
-    },
-    "wmt-mtb": {
-      url: "https://tile.waymarkedtrails.org/mtb/{z}/{x}/{y}.png", maxZoom: 18,
-      attribution: "Routes: &copy; <a href='https://waymarkedtrails.org'>waymarkedtrails.org</a> (CC-BY-SA)"
-    },
-    "wmt-skating": {
-      url: "https://tile.waymarkedtrails.org/skating/{z}/{x}/{y}.png", maxZoom: 18,
-      attribution: "Routes: &copy; <a href='https://waymarkedtrails.org'>waymarkedtrails.org</a> (CC-BY-SA)"
-    },
-    "wmt-riding": {
-      url: "https://tile.waymarkedtrails.org/riding/{z}/{x}/{y}.png", maxZoom: 18,
-      attribution: "Routes: &copy; <a href='https://waymarkedtrails.org'>waymarkedtrails.org</a> (CC-BY-SA)"
-    },
-    "wmt-winter": {
-      url: "https://tile.waymarkedtrails.org/winter/{z}/{x}/{y}.png", maxZoom: 18,
-      attribution: "Routes: &copy; <a href='https://waymarkedtrails.org'>waymarkedtrails.org</a> (CC-BY-SA)"
-    },
-    "oseam-seamark": {
-      url: "https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png", maxZoom: 18,
-      attribution: "Sea marks: &copy; <a href='https://openseamap.org'>OpenSeaMap</a> contributors (CC-BY-SA)"
-    }
+  const WMT_ATTRIBUTION =
+    "Routes: &copy; <a href='https://waymarkedtrails.org'>waymarkedtrails.org</a> (CC-BY-SA)";
+  const OVERLAYS = {};
+  for (const trail of ["hiking", "cycling", "mtb", "skating", "riding", "winter"]) {
+    OVERLAYS[`wmt-${trail}`] = {
+      url: `https://tile.waymarkedtrails.org/${trail}/{z}/{x}/{y}.png`,
+      maxZoom: 18,
+      attribution: WMT_ATTRIBUTION
+    };
+  }
+  OVERLAYS["oseam-seamark"] = {
+    url: "https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png",
+    maxZoom: 18,
+    attribution: "Sea marks: &copy; <a href='https://openseamap.org'>OpenSeaMap</a> contributors (CC-BY-SA)"
   };
-  var overlaySelect = document.getElementById("overlay-select");
-  var activeOverlay = null;
+
+  const overlaySelect = document.getElementById("overlay-select");
+  let activeOverlay = null;
 
   function setOverlay(id) {
     if (activeOverlay) {
       map.removeLayer(activeOverlay);
       activeOverlay = null;
     }
-    var def = OVERLAYS[id];
+    const def = OVERLAYS[id];
     if (def) {
       activeOverlay = L.tileLayer(def.url, {
         maxZoom: def.maxZoom,
@@ -611,53 +604,51 @@
         attribution: def.attribution
       }).addTo(map);
     }
-    try { localStorage.setItem(OVERLAY_STORAGE_KEY, id || ""); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(OVERLAY_STORAGE_KEY, id || ""); } catch { /* ignore */ }
   }
 
-  overlaySelect.addEventListener("change", function () {
-    setOverlay(overlaySelect.value);
-  });
+  overlaySelect.addEventListener("change", () => setOverlay(overlaySelect.value));
 
-  (function restoreOverlay() {
-    var saved = "";
-    try { saved = localStorage.getItem(OVERLAY_STORAGE_KEY) || ""; } catch (e) { /* ignore */ }
-    if (!OVERLAYS[saved]) { saved = ""; }
-    overlaySelect.value = saved;
-    if (saved) { setOverlay(saved); }
-  })();
+  let savedOverlay = "";
+  try { savedOverlay = localStorage.getItem(OVERLAY_STORAGE_KEY) || ""; } catch { /* ignore */ }
+  if (!OVERLAYS[savedOverlay]) { savedOverlay = ""; }
+  overlaySelect.value = savedOverlay;
+  if (savedOverlay) { setOverlay(savedOverlay); }
 
   function parseEditor() {
-    var text = editorValue();
-    try {
-      return { ok: true, data: JSON.parse(text), text: text };
-    } catch (e) {
-      return { ok: false, error: e.message, text: text };
-    }
+    const text = editorValue();
+    try { return { ok: true, data: JSON.parse(text), text }; }
+    catch (e) { return { ok: false, error: e.message, text }; }
   }
 
-  function refreshStatus() {
-    var r = parseEditor();
-    var dirty = r.text !== lastRendered;
-    updateBtn.classList.toggle("show", dirty);
-    neverMindBtn.classList.toggle("show", dirty);
-    updateBtn.disabled = !r.ok;
-    if (!r.ok) {
-      setStatus("Invalid JSON: " + r.error, true);
-      return;
-    }
-    var n = countFeatures(r.data);
-    setStatus(n + " feature" + (n === 1 ? "" : "s") + (dirty ? " \u00b7 unsaved" : " rendered"), false);
+  function loadSavedText() {
+    try { return localStorage.getItem(GEOJSON_STORAGE_KEY); } catch { return null; }
   }
 
   function saveNow() {
-    try { localStorage.setItem(GEOJSON_STORAGE_KEY, editorValue()); } catch (e) { /* storage full/unavailable */ }
+    try { localStorage.setItem(GEOJSON_STORAGE_KEY, editorValue()); } catch { /* storage full/unavailable */ }
   }
 
-  var statusTimer = null;
-  function scheduleStatusRefresh() {
-    // live validation only - the text itself saves exclusively via "Update"
+  function refreshStatus() {
+    const r = parseEditor();
+    const dirty = r.text !== lastRendered;
+    updateBtn.classList.toggle("show", dirty);
+    neverMindBtn.classList.toggle("show", dirty);
+    updateBtn.disabled = !r.ok;
+    setGeomanEnabled(!dirty);
+    if (!r.ok) {
+      setStatus(`Invalid JSON: ${r.error}`, true);
+      return;
+    }
+    const n = r.data.type === "FeatureCollection" && Array.isArray(r.data.features) ? r.data.features.length : 1;
+    setStatus(`${n} feature${n === 1 ? "" : "s"}${dirty ? " \u00b7 unsaved" : " rendered"}`);
+  }
+
+  function onEdit() {
+    if (syncingFromMap) { return; } // map-originated; setEditorText owns the state
+    setGeomanEnabled(false);        // dirty text owns the data until Update / Never mind
     clearTimeout(statusTimer);
-    statusTimer = setTimeout(refreshStatus, 300);
+    statusTimer = setTimeout(refreshStatus, 300); // live validation; the text saves via Update / map sync only
   }
 
   // ---- Temporal features: fuzzy-date popups, range filter, playback ----
@@ -665,178 +656,136 @@
   // instant ("1920", "2020-03~") or "start"/"end" for a range ("../.." open
   // bounds allowed). RFC 7946 lets properties hold arbitrary JSON; EDTF is
   // the Library of Congress fuzzy-date spec (ISO 8601-2 profile).
-  var MIN_MS = -62135596800000;  // year 1
-  var MAX_MS = 253402300799999;  // year 9999
-  var timeIndex = null;
-  var playbackOn = false;
-  var tlLayer = null;
-  var tlControl = null;
-  var timeUI = {};
-  var timeFilter = { lo: MIN_MS, hi: MAX_MS };
+  const MIN_MS = -62135596800000;  // year 1
+  const MAX_MS = 253402300799999;  // year 9999
+  let timeIndex = null;
+  let playbackOn = false;
+  let tlLayer = null;
+  let tlControl = null;
+  const timeUI = {};
+  const timeFilter = { lo: MIN_MS, hi: MAX_MS };
 
   // Level-0 fallback: "YYYY", "YYYY-MM", "YYYY-MM-DD" and "a/b" intervals.
-  function basicEdtfBounds(s) {
-    s = String(s).trim();
-    var one = function (t) {
-      var m = /^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$/.exec(t);
+  let parseEdtf = s => {
+    const one = t => {
+      const m = /^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$/.exec(t);
       if (!m) { return null; }
-      var y = +m[1];
+      const y = +m[1];
       if (!m[2]) { return { min: Date.UTC(y, 0, 1), max: Date.UTC(y, 11, 31, 23, 59, 59, 999) }; }
       if (!m[3]) { return { min: Date.UTC(y, m[2] - 1, 1), max: Date.UTC(y, m[2], 0, 23, 59, 59, 999) }; }
-      var ms = Date.UTC(y, m[2] - 1, m[3]);
+      const ms = Date.UTC(y, m[2] - 1, m[3]);
       return { min: ms, max: ms + 86399999 };
     };
-    var parts = s.split("/");
+    s = String(s).trim();
+    const parts = s.split("/");
     if (parts.length === 1) { return one(parts[0]); }
-    var a = (parts[0] === "" || parts[0] === "..") ? null : one(parts[0]);
-    var b = (parts[1] === "" || parts[1] === "..") ? null : one(parts[1]);
+    const a = (parts[0] === "" || parts[0] === "..") ? null : one(parts[0]);
+    const b = (parts[1] === "" || parts[1] === "..") ? null : one(parts[1]);
     if (!a && !b) { return null; }
     return { min: a ? a.min : -Infinity, max: b ? b.max : Infinity };
-  }
-
-  var parseEdtf = basicEdtfBounds;
+  };
 
   // Upgrade to full EDTF (fuzzy "2020~", "200X", "?" uncertainty, ...) when
   // the library is reachable; the fallback parser keeps the app usable offline.
   import("https://cdn.jsdelivr.net/npm/edtf@4/+esm")
-    .then(function (mod) {
-      var edtf = mod.default || mod.edtf;
+    .then(mod => {
+      const edtf = mod.default || mod.edtf;
       if (typeof edtf !== "function") { return; }
-      parseEdtf = function (s) {
+      parseEdtf = s => {
         try {
-          var d = edtf(String(s));
+          const d = edtf(String(s));
           if (!d || d.min == null || d.max == null) { return null; }
           return { min: +d.min, max: +d.max };
-        } catch (e) { return null; }
+        } catch { return null; }
       };
       rebuildTimeIndex();   // re-index with full fuzz support
       if (playbackOn) { setPlayback(true); }
     })
-    .catch(function () { /* keep the fallback parser */ });
+    .catch(() => { /* keep the fallback parser */ });
 
-  function clampMs(v, fallback) {
-    if (v === -Infinity || v < MIN_MS) { return MIN_MS; }
-    if (v === Infinity || v > MAX_MS) { return MAX_MS; }
-    return isFinite(v) ? v : fallback;
-  }
+  const clampMs = ms => Math.min(Math.max(ms, MIN_MS), MAX_MS);
 
   function featureInterval(props) {
-    var one = function (v) {
+    const one = v => {
       if (v == null || v === "") { return null; }
       if (typeof v === "number" && isFinite(v)) { return { min: v, max: v }; }
-      var r = parseEdtf(v);
-      return r ? { min: clampMs(r.min, r.min), max: clampMs(r.max, r.max) } : null;
+      const r = parseEdtf(v);
+      return r ? { min: clampMs(r.min), max: clampMs(r.max) } : null;
     };
-    var a = one(props.datetime);
-    if (a) { return a; }
-    var s = one(props.start);
-    var e = one(props.end);
+    const dt = one(props.datetime);
+    if (dt) { return dt; }
+    const s = one(props.start);
+    const e = one(props.end);
     if (!s && !e) { return null; }
-    return {
-      min: s ? s.min : (e ? e.min : MIN_MS),
-      max: e ? e.max : (s ? s.max : MAX_MS)
-    };
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-    });
-  }
-
-  function describeTimeRaw(p) {
-    var bits = [];
-    if (p.datetime) { bits.push(String(p.datetime)); }
-    if (p.start || p.end) { bits.push(String(p.start || "...") + " - " + String(p.end || "...")); }
-    return bits.join(" | ");
-  }
-
-  function popupHtml(feature) {
-    var p = (feature && feature.properties) || {};
-    var html = "";
-    if (p.name) { html += "<strong>" + escapeHtml(String(p.name)) + "</strong>"; }
-    var t = describeTimeRaw(p);
-    if (t) { html += (html ? "<br>" : "") + '<span class="popup-time">' + escapeHtml(t) + "</span>"; }
-    return html;
+    return { min: s ? s.min : e.min, max: e ? e.max : s.max };
   }
 
   function setVisible(layer, visible) {
     if (layer.getLayers) {          // Multi* geometries arrive as groups
-      layer.getLayers().forEach(function (l) { setVisible(l, visible); });
+      layer.getLayers().forEach(l => setVisible(l, visible));
       return;
     }
-    if (layer.getElement) {
-      var el = layer.getElement();
-      if (el) { el.style.display = visible ? "" : "none"; }
-    }
+    const el = layer.getElement && layer.getElement();
+    if (el) { el.style.display = visible ? "" : "none"; }
   }
 
   function formatMs(ms) {
     if (!isFinite(ms)) { return "..."; }
-    var d = new Date(ms);
-    var span = timeIndex ? timeIndex.max - timeIndex.min : 0;
+    const d = new Date(ms);
+    const span = timeIndex ? timeIndex.max - timeIndex.min : 0;
     if (span > 3 * 366 * 864e5) { return String(d.getUTCFullYear()); }
     return d.toISOString().slice(0, 10);
   }
 
-  function sliderToMs(v) {
-    return timeIndex.min + (v / 1000) * (timeIndex.max - timeIndex.min);
-  }
-
   function updateTimeFilterUI() {
     if (!timeIndex || !timeIndex.items.length || !timeUI.card) { return; }
-    var lo = sliderToMs(+timeUI.lo.value);
-    var hi = sliderToMs(+timeUI.hi.value);
+    const span = timeIndex.max - timeIndex.min;
+    const lo = timeIndex.min + (+timeUI.lo.value * span) / 1000;
+    const hi = timeIndex.min + (+timeUI.hi.value * span) / 1000;
     timeFilter.lo = lo;
     timeFilter.hi = hi;
-    var span = Math.max(1, timeIndex.max - timeIndex.min);
-    timeUI.fill.style.left = (100 * (lo - timeIndex.min) / span) + "%";
-    timeUI.fill.style.right = (100 - 100 * (hi - timeIndex.min) / span) + "%";
+    const spanPct = Math.max(1, span);
+    timeUI.fill.style.left = `${(100 * (lo - timeIndex.min)) / spanPct}%`;
+    timeUI.fill.style.right = `${100 - (100 * (hi - timeIndex.min)) / spanPct}%`;
     timeUI.loLabel.textContent = formatMs(lo);
     timeUI.hiLabel.textContent = formatMs(hi);
     applyTimeFilter();
   }
 
-  function onLoInput() {
-    if (+timeUI.lo.value > +timeUI.hi.value) { timeUI.lo.value = timeUI.hi.value; }
-    updateTimeFilterUI();
-  }
-
-  function onHiInput() {
-    if (+timeUI.hi.value < +timeUI.lo.value) { timeUI.hi.value = timeUI.lo.value; }
+  function onRangeInput(e) {
+    const lo = +timeUI.lo.value;
+    const hi = +timeUI.hi.value;
+    if (lo > hi) { e.target.value = e.target === timeUI.lo ? hi : lo; }
     updateTimeFilterUI();
   }
 
   function applyTimeFilter() {
     if (!timeIndex) { return; }
-    dataLayer.getLayers().forEach(function (layer) {
-      var iv = timeIndex.byLayer.get(layer);
-      var visible = true;
-      if (iv) {
-        // during playback the timeline layer owns the temporal features
-        visible = playbackOn ? false : (iv.min <= timeFilter.hi && iv.max >= timeFilter.lo);
-      }
+    dataLayer.getLayers().forEach(layer => {
+      const iv = timeIndex.byLayer.get(layer);
+      // during playback the timeline layer owns the temporal features
+      const visible = iv ? !playbackOn && iv.min <= timeFilter.hi && iv.max >= timeFilter.lo : true;
       setVisible(layer, visible);
     });
   }
 
   function rebuildTimeIndex() {
-    var prevMin = timeIndex ? timeIndex.min : null;
-    var prevMax = timeIndex ? timeIndex.max : null;
+    const prevMin = timeIndex ? timeIndex.min : null;
+    const prevMax = timeIndex ? timeIndex.max : null;
     timeIndex = { items: [], byLayer: new Map(), min: Infinity, max: -Infinity };
     if (!dataLayer) { return; }
-    dataLayer.getLayers().forEach(function (layer) {
-      var f = layer.feature || null;
-      var iv = f ? featureInterval(f.properties || {}) : null;
+    dataLayer.getLayers().forEach(layer => {
+      const f = layer.feature || null;
+      const iv = f ? featureInterval(f.properties || {}) : null;
       timeIndex.byLayer.set(layer, iv);
       if (f && iv) {
-        f.__interval = iv;
-        timeIndex.items.push({ layer: layer, feature: f, interval: iv });
+        f.__interval = iv; // read back by L.timeline's getInterval
+        timeIndex.items.push({ layer, feature: f, interval: iv });
         if (iv.min < timeIndex.min) { timeIndex.min = iv.min; }
         if (iv.max > timeIndex.max) { timeIndex.max = iv.max; }
       }
     });
-    var has = timeIndex.items.length > 0;
+    const has = timeIndex.items.length > 0;
     timeUI.card.style.display = has ? "" : "none";
     if (has) {
       if (timeIndex.min !== prevMin || timeIndex.max !== prevMax) {
@@ -854,26 +803,14 @@
     if (tlControl) { map.removeControl(tlControl); tlControl = null; }
     if (tlLayer) { map.removeLayer(tlLayer); tlLayer = null; }
     if (on && timeIndex && timeIndex.items.length) {
-      var fc = {
+      const fc = {
         type: "FeatureCollection",
-        features: timeIndex.items.map(function (it) { return it.feature; })
+        features: timeIndex.items.map(item => item.feature)
       };
-      tlLayer = L.timeline(fc, {
+      tlLayer = L.timeline(fc, Object.assign(layerOptions("#7c3aed", false), {
         pmIgnore: true,           // keep Geoman off the playback copies
-        getInterval: function (f) {
-          return f.__interval ? { start: f.__interval.min, end: f.__interval.max } : false;
-        },
-        style: function () { return { color: "#7c3aed", weight: 2, fillOpacity: 0.25 }; },
-        pointToLayer: function (_feature, latlng) {
-          return L.circleMarker(latlng, {
-            radius: 6, color: "#7c3aed", weight: 2, fillOpacity: 0.5
-          });
-        },
-        onEachFeature: function (feature, layer) {
-          var html = popupHtml(feature);
-          if (html) { layer.bindPopup(html, { className: "feat-popup" }); }
-        }
-      });
+        getInterval: f => f.__interval ? { start: f.__interval.min, end: f.__interval.max } : false
+      }));
       tlControl = L.timelineSliderControl({
         position: "topright",
         formatOutput: formatMs,
@@ -888,10 +825,10 @@
     applyTimeFilter();
   }
 
-  var TimeFilterControl = L.Control.extend({
+  const TimeFilterControl = L.Control.extend({
     options: { position: "topright" },
-    onAdd: function () {
-      var root = L.DomUtil.create("div", "time-card");
+    onAdd() {
+      const root = L.DomUtil.create("div", "time-card");
       root.style.display = "none";
       root.innerHTML =
         '<div class="time-head"><span>Time filter</span>' +
@@ -903,15 +840,16 @@
         "</div>" +
         '<div class="time-labels"><span class="lo-label"></span><span class="hi-label"></span></div>';
       timeUI.card = root;
-      timeUI.lo = root.querySelectorAll("input")[0];
-      timeUI.hi = root.querySelectorAll("input")[1];
+      const inputs = root.querySelectorAll("input");
+      timeUI.lo = inputs[0];
+      timeUI.hi = inputs[1];
       timeUI.fill = root.querySelector(".range-fill");
       timeUI.loLabel = root.querySelector(".lo-label");
       timeUI.hiLabel = root.querySelector(".hi-label");
       timeUI.playBtn = root.querySelector(".playback-toggle");
-      timeUI.lo.addEventListener("input", onLoInput);
-      timeUI.hi.addEventListener("input", onHiInput);
-      timeUI.playBtn.addEventListener("click", function () { setPlayback(!playbackOn); });
+      timeUI.lo.addEventListener("input", onRangeInput);
+      timeUI.hi.addEventListener("input", onRangeInput);
+      timeUI.playBtn.addEventListener("click", () => setPlayback(!playbackOn));
       L.DomEvent.disableClickPropagation(root);
       L.DomEvent.disableScrollPropagation(root);
       return root;
@@ -919,17 +857,11 @@
   });
   map.addControl(new TimeFilterControl());
 
-  // Load persisted GeoJSON (or a sample) into the textarea before CM takes over.
-  var saved = null;
-  try { saved = localStorage.getItem(GEOJSON_STORAGE_KEY); } catch (e) { /* ignore */ }
-  textarea.value = (saved !== null && saved !== "")
-    ? saved
-    : EMPTY_GEOJSON_TEXT;
+  // Load persisted GeoJSON (or the empty collection) before CM takes over.
+  const savedText = loadSavedText();
+  textarea.value = savedText ? savedText : EMPTY_GEOJSON_TEXT;
 
   // CodeMirror, with a plain-textarea fallback if the CDN library fails to load.
-  var cm = null;
-  var editorValue;
-
   if (typeof CodeMirror !== "undefined") {
     cm = CodeMirror.fromTextArea(textarea, {
       mode: "application/json",
@@ -941,68 +873,55 @@
       tabSize: 2,
       gutters: ["CodeMirror-lint-markers", "CodeMirror-linenumbers"]
     });
-    editorValue = function () { return cm.getValue(); };
   } else {
-    editorValue = function () { return textarea.value; };
     setStatus("CodeMirror CDN failed to load - plain text mode", true);
   }
 
-  lastRendered = editorValue();
+  const editorValue = () => (cm ? cm.getValue() : textarea.value);
 
-  var r = parseEditor();
-  if (r.ok) { renderData(r.data); }
+  const parsed = parseEditor();
+  lastRendered = parsed.text;
+  if (parsed.ok) { renderData(parsed.data); }
   refreshStatus();
-
-  function onEdit() {
-    if (syncingFromMap) { return; } // map-originated; syncMapToText owns the state
-    var dirty = editorValue() !== lastRendered;
-    updateBtn.classList.toggle("show", dirty);
-    neverMindBtn.classList.toggle("show", dirty);
-    scheduleStatusRefresh();
-  }
 
   if (cm) { cm.on("change", onEdit); }
   else { textarea.addEventListener("input", onEdit); }
 
-  updateBtn.addEventListener("click", function (e) {
+  updateBtn.addEventListener("click", e => {
     e.stopPropagation(); // don't toggle the panel
-    var res = parseEditor();
-    if (!res.ok) {
-      setStatus("Invalid JSON: " + res.error, true);
+    const r = parseEditor();
+    if (!r.ok) {
+      setStatus(`Invalid JSON: ${r.error}`, true);
       return;
     }
-    renderData(res.data);
-    lastRendered = res.text;
-    clearTimeout(statusTimer);
+    renderData(r.data);
+    lastRendered = r.text;
     saveNow();
     refreshStatus();
-    if (cm) { cm.focus(); } else { textarea.focus(); }
+    (cm || textarea).focus();
   });
 
-  neverMindBtn.addEventListener("click", function (e) {
+  neverMindBtn.addEventListener("click", e => {
     e.stopPropagation(); // don't toggle the panel
-    var saved = null;
-    try { saved = localStorage.getItem(GEOJSON_STORAGE_KEY); } catch (err) { /* ignore */ }
-    var text = (saved !== null && saved !== "") ? saved : EMPTY_GEOJSON_TEXT;
-    syncingFromMap = false;
-    if (cm) { cm.setValue(text); } else { textarea.value = text; }
-    clearTimeout(statusTimer);
+    const saved = loadSavedText();
+    const text = saved ? saved : EMPTY_GEOJSON_TEXT;
+    setEditorText(text);
     if (text !== lastRendered) {
       // storage and the editor disagree with what is drawn (e.g. right after
       // a Reset) - bring the map back in line with the restored text
-      var res = parseEditor();
-      if (res.ok) { renderData(res.data); }
+      const r = parseEditor();
+      if (r.ok) { renderData(r.data); }
     }
     lastRendered = text;
     refreshStatus();
-    if (cm) { cm.focus(); } else { textarea.focus(); }
+    (cm || textarea).focus();
   });
 
   // The panel is anchored bottom-left: a small pill when collapsed, full
   // width when open. Collapsed size is fit-content, which CSS can't animate,
   // so expand/collapse pin an explicit start width, then release it to let
   // the transition run to the class-driven target.
-  var widthAnimHandler = null;
+  let widthAnimHandler = null;
 
   function stopWidthAnim() {
     if (widthAnimHandler) {
@@ -1013,31 +932,31 @@
 
   function expandPanel() {
     stopWidthAnim();
-    var w0 = panel.offsetWidth;            // current pill (or mid-anim) width
+    const w0 = panel.offsetWidth;          // current pill (or mid-anim) width
     panel.classList.add("open");
     panel.style.height = "";               // release any pinned height
-    panel.style.width = w0 + "px";         // pin start width
+    panel.style.width = `${w0}px`;         // pin start width
     void panel.offsetWidth;                // commit the start state
     panel.style.width = "";                // release -> animates to full width
   }
 
   function collapsePanel() {
     stopWidthAnim();
-    var w0 = panel.offsetWidth;            // current full width
-    var h0 = panel.offsetHeight;
-    panel.style.width = w0 + "px";         // pin both at current size
-    panel.style.height = h0 + "px";
+    const w0 = panel.offsetWidth;          // current full width
+    const h0 = panel.offsetHeight;
+    panel.style.width = `${w0}px`;         // pin both at current size
+    panel.style.height = `${h0}px`;
     panel.style.transition = "none";
     panel.classList.remove("open");
     panel.style.width = "auto";            // measure the collapsed pill size
-    var w1 = panel.offsetWidth;
-    panel.style.width = w0 + "px";         // back to the pinned start state
-    panel.style.height = h0 + "px";
+    const w1 = panel.offsetWidth;
+    panel.style.width = `${w0}px`;         // back to the pinned start state
+    panel.style.height = `${h0}px`;
     void panel.offsetWidth;
     panel.style.transition = "";           // re-enable transitions
-    panel.style.width = w1 + "px";         // width: full -> pill
+    panel.style.width = `${w1}px`;         // width: full -> pill
     panel.style.height = "";               // height: current -> 46px
-    widthAnimHandler = function (e) {
+    widthAnimHandler = e => {
       if (e.propertyName !== "width") { return; }
       panel.style.width = "";              // hand control back to CSS
       panel.removeEventListener("transitionend", widthAnimHandler);
@@ -1048,40 +967,30 @@
 
   function openPanel() {
     if (!panel.classList.contains("open")) { expandPanel(); }
-    setTimeout(function () { if (cm) { cm.refresh(); } }, 320); // after transition
-    if (cm) { cm.focus(); } else { textarea.focus(); }
+    setTimeout(() => { if (cm) { cm.refresh(); } }, 320); // after transition
+    (cm || textarea).focus();
   }
 
-  panelBar.addEventListener("click", function () {
-    if (panel.classList.contains("open")) {
-      collapsePanel();
-    } else {
-      openPanel();
-    }
+  panelBar.addEventListener("click", () => {
+    if (panel.classList.contains("open")) { collapsePanel(); } else { openPanel(); }
   });
 
   // ---- Header menu: brand click slides the name right, revealing buttons ----
-  var header = document.querySelector("header");
-  brand.addEventListener("click", function () {
-    header.classList.toggle("menu-open");
-  });
+  brand.addEventListener("click", () => header.classList.toggle("menu-open"));
 
   function resetAll() {
-    try { localStorage.clear(); } catch (e) { /* ignore */ }
-    if (activeOverlay) {                    // overlay state lived in storage
-      map.removeLayer(activeOverlay);
-      activeOverlay = null;
-      overlaySelect.value = "";
-    }
+    try { localStorage.clear(); } catch { /* ignore */ }
+    clearTimeout(mapSyncTimer);  // don't resurrect wiped data via a pending map sync
+    overlaySelect.value = "";
+    setOverlay("");              // overlay state lived in storage
     // Wipe the text but leave lastRendered untouched: the map (and storage)
     // keep the old features until the user confirms with "Update".
-    syncingFromMap = false;
-    if (cm) { cm.setValue(EMPTY_GEOJSON_TEXT); } else { textarea.value = EMPTY_GEOJSON_TEXT; }
+    setEditorText(EMPTY_GEOJSON_TEXT);
     refreshStatus();
     openPanel();
   }
 
-  document.getElementById("reset-btn").addEventListener("click", function (e) {
+  document.getElementById("reset-btn").addEventListener("click", e => {
     e.stopPropagation();
     resetAll();
     header.classList.remove("menu-open");
@@ -1089,41 +998,69 @@
 
   if (cm) {
     // Keep Leaflet keyboard shortcuts from firing while typing in the editor.
-    ["keydown", "keyup", "keypress"].forEach(function (type) {
-      cm.getWrapperElement().addEventListener(type, function (e) {
-        e.stopPropagation();
-      });
+    ["keydown", "keyup", "keypress"].forEach(type => {
+      cm.getWrapperElement().addEventListener(type, e => { e.stopPropagation(); });
     });
   }
 
   // ---- Graphical drawing/editing (Leaflet-Geoman) ----
-  // Map changes are the same data as the text, so they sync straight back into
-  // the editor + LocalStorage without needing the Update button.
-  var mapSyncTimer = null;
-  var syncingFromMap = false;
+  // Whenever the text is clean, map changes sync straight back into the editor
+  // and LocalStorage without needing the Update button. While the text is
+  // dirty (unsaved edits), the toolbar is hidden and active modes are
+  // cancelled, so the text - not the map - owns the data until it is resolved
+  // via Update / Never mind. Panning and zooming are unaffected.
+
+  function setEditorText(text) {
+    syncingFromMap = true;
+    if (cm) { cm.setValue(text); } else { textarea.value = text; }
+    syncingFromMap = false;
+  }
+
+  function setGeomanEnabled(enabled) {
+    if (!map.pm) { return; }
+    document.body.classList.toggle("geojson-dirty", !enabled);
+    if (!enabled) {
+      // cancel any active mode; each call is a no-op when already inactive
+      map.pm.Draw.disable();
+      map.pm.disableGlobalEditMode();
+      map.pm.disableGlobalDragMode();
+      map.pm.disableGlobalRemovalMode();
+      map.pm.disableGlobalRotateMode();
+      map.pm.disableGlobalCutMode();
+    }
+  }
 
   function addSerialized(layer) {
     // a cut can produce a LayerGroup of several pieces - flatten it
     if (layer instanceof L.LayerGroup) {
-      layer.getLayers().forEach(function (l) { dataLayer.addLayer(l); });
+      layer.getLayers().forEach(l => dataLayer.addLayer(l));
     } else {
       dataLayer.addLayer(layer);
     }
   }
 
-  function pruneRemoved() {
-    dataLayer.getLayers().slice().forEach(function (layer) {
-      if (!map.hasLayer(layer)) { dataLayer.removeLayer(layer); }
-    });
+  function wireGeomanSync(layer) {
+    if (layer.getLayers) {
+      layer.getLayers().forEach(l => wireGeomanSync(l));
+      return;
+    }
+    // pm:edit / pm:dragend / pm:rotateend are LAYER events in Geoman (only
+    // create/cut/remove fire on the map), so every feature gets its own listeners.
+    layer.on("pm:edit pm:dragend pm:rotateend", scheduleMapSync);
   }
 
-  function syncMapToText() {
+  function syncNow() {
     if (!dataLayer) { return; }
-    pruneRemoved();
-    var text = JSON.stringify(dataLayer.toGeoJSON(), null, 2);
-    syncingFromMap = true;
-    if (cm) { cm.setValue(text); } else { textarea.value = text; }
-    syncingFromMap = false;
+    if (editorValue() !== lastRendered) {
+      // the text is dirty - it owns the data; retry once it is resolved
+      mapSyncTimer = setTimeout(syncNow, 1000);
+      return;
+    }
+    dataLayer.getLayers().slice().forEach(l => {
+      if (!map.hasLayer(l)) { dataLayer.removeLayer(l); }
+    });
+    const text = JSON.stringify(dataLayer.toGeoJSON(), null, 2);
+    setEditorText(text);
     lastRendered = text;
     saveNow();
     refreshStatus();
@@ -1132,17 +1069,7 @@
 
   function scheduleMapSync() {
     clearTimeout(mapSyncTimer);
-    mapSyncTimer = setTimeout(syncMapToText, 400);
-  }
-
-  // pm:edit / pm:dragend / pm:rotateend are LAYER events in Geoman (only
-  // create/cut/remove fire on the map), so every feature gets its own listeners.
-  function wireGeomanSync(layer) {
-    if (layer.getLayers) {
-      layer.getLayers().forEach(function (l) { wireGeomanSync(l); });
-      return;
-    }
-    layer.on("pm:edit pm:dragend pm:rotateend", scheduleMapSync);
+    mapSyncTimer = setTimeout(syncNow, 400);
   }
 
   if (map.pm) {
@@ -1161,16 +1088,22 @@
       removalMode: true
     });
 
-    map.on("pm:create", function (e) { addSerialized(e.layer); wireGeomanSync(e.layer); scheduleMapSync(); });
-    map.on("pm:cut", function (e) { addSerialized(e.layer); wireGeomanSync(e.layer); scheduleMapSync(); });
+    map.on("pm:create pm:cut", e => {
+      if (!dataLayer) { renderData({ type: "FeatureCollection", features: [] }); }
+      addSerialized(e.layer);
+      wireGeomanSync(e.layer);
+      scheduleMapSync();
+    });
     map.on("pm:remove", scheduleMapSync);
   } else {
     setStatus("Geoman CDN failed to load - drawing disabled", true);
   }
 
-  window.addEventListener("pagehide", function () {
+  window.addEventListener("pagehide", () => {
     clearTimeout(statusTimer);
     clearTimeout(viewSaveTimer);
+    clearTimeout(mapSyncTimer);
+    syncNow();  // flush a pending map edit (self-skips while the text is dirty)
     saveView(); // unsaved text edits are intentionally discarded
   });
 })();
