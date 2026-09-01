@@ -62,10 +62,13 @@
     opacity: 0;
     overflow: hidden;
     white-space: nowrap;
-    transition: max-width .3s ease, opacity .25s ease;
+    transition: max-width .3s ease, opacity .25s ease, padding-right .3s ease;
   }
 
-  header.menu-open #menu-buttons { max-width: 170px; opacity: 1; }
+  /* Open-state padding-right keeps the title exactly one header side-margin
+     (16px) away from the button - the same distance it keeps from the header
+     edge when closed. Collapsed stays width-0, so nothing else moves. */
+  header.menu-open #menu-buttons { max-width: 170px; opacity: 1; padding-right: 16px; }
 
   #menu-buttons button {
     border: 1px solid #475569;
@@ -985,6 +988,26 @@
   function closeDetails() {
     detailsPopup.remove();
   }
+
+  // Enter while the card is open: flush the debounced map->text sync
+  // immediately (the pending edit may not have serialized yet), then close.
+  // Works from anywhere except the GeoJSON editor, where Enter keeps its
+  // native meaning.
+  function commitDetails() {
+    if (mapSyncTimer) {
+      clearTimeout(mapSyncTimer);
+      syncNow();
+    }
+    closeDetails();
+  }
+
+  document.addEventListener("keydown", e => {
+    if (e.key !== "Enter" || e.isComposing || !selectedLayer) { return; }
+    const t = e.target;
+    if (t && t.closest && t.closest(".CodeMirror, #geojson-input")) { return; }
+    e.preventDefault();
+    commitDetails();
+  });
 
   function selectFeature(layer, latlng) {
     if (selectedLayer === layer) { return; } // keep card and input focus as-is
