@@ -251,6 +251,91 @@
 
   .CodeMirror-linenumber { color: #94a3b8; }
 
+  /* ---- feature details card ---- */
+  /* Opens anchored at the clicked feature (a chrome-less Leaflet popup).
+     Input edits apply live through the standard map -> text sync; a blank
+     input removes the property. Display-only while the GeoJSON text is
+     dirty (same body class that hides the Geoman toolbar). */
+  .details-card {
+    background: rgba(255,255,255,.97);
+    backdrop-filter: blur(6px);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.35);
+    padding: 10px 12px;
+    width: 240px;
+    font-size: .75rem;
+    line-height: 1.4;
+    text-align: left;
+    color: #1e293b;
+  }
+
+  .details-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+
+  .details-head button {
+    border: none;
+    background: none;
+    padding: 0 2px;
+    font-size: 1rem;
+    line-height: 1;
+    color: #64748b;
+    cursor: pointer;
+  }
+
+  .details-head button:hover { color: #dc2626; }
+
+  .details-field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 5px;
+  }
+
+  .details-field span { flex: 0 0 58px; color: #64748b; }
+
+  .details-field input {
+    flex: 1 1 auto;
+    min-width: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    padding: 3px 6px;
+    font: .75rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #f8fafc;
+    color: #0f172a;
+    outline: none;
+  }
+
+  .details-field input:focus { border-color: #38bdf8; }
+  .details-field input.invalid { border-color: #dc2626; background: #fef2f2; }
+
+  .details-hint {
+    min-height: 14px;
+    font-size: .68rem;
+    color: #dc2626;
+  }
+
+  body.geojson-dirty .details-card input { opacity: .5; pointer-events: none; }
+  body.geojson-dirty .details-hint::before {
+    content: "Paused - resolve the GeoJSON text first (Update / Never mind)";
+    color: #64748b;
+  }
+
+  /* strip the default popup chrome around the card */
+  .details-popup .leaflet-popup-content-wrapper {
+    background: transparent;
+    box-shadow: none;
+    border-radius: 0;
+  }
+
+  .details-popup .leaflet-popup-content { margin: 0; line-height: 1.4; }
+
+  .details-popup .leaflet-popup-tip { display: none; }
+
   /* ---- Geoman toolbar ---- */
   /* While the GeoJSON text has unsaved edits it owns the data: the drawing
      toolbar is hidden and active modes are cancelled (see setGeomanEnabled).
@@ -516,14 +601,19 @@
       style: () => ({ color, weight: 2, fillOpacity: 0.25 }),
       pointToLayer: (_feature, latlng) => L.circleMarker(latlng, { radius: 6, color, weight: 2, fillOpacity: 0.5 }),
       onEachFeature: (feature, layer) => {
-        if (wireGeoman) { wireGeomanSync(layer); }
-        const html = popupHtml(feature);
-        if (html) { layer.bindPopup(html, { className: "feat-popup" }); }
+        if (wireGeoman) {
+          wireGeomanSync(layer);
+          layer.on("click", e => selectFeature(layer, e.latlng)); // opens the details card
+        } else {
+          const html = popupHtml(feature); // read-only summary on playback copies
+          if (html) { layer.bindPopup(html, { className: "feat-popup" }); }
+        }
       }
     };
   }
 
   function renderData(data) {
+    closeDetails(); // the layer set is rebuilt - drop any open selection
     if (dataLayer) {
       map.removeLayer(dataLayer);
       dataLayer = null;
@@ -857,6 +947,91 @@
   });
   map.addControl(new TimeFilterControl());
 
+  // ---- Feature details card (click a feature to edit name / times) ----
+  // A chrome-less popup anchored at the click point. Inputs apply live: each
+  // keystroke mutates feature.properties and rides the same debounced
+  // map -> text -> LocalStorage sync as a Geoman drag; a blank input removes
+  // the property. While the GeoJSON text is dirty the card is display-only.
+  const detailsCard = L.DomUtil.create("div", "details-card");
+  detailsCard.innerHTML =
+    '<div class="details-head"><span>Feature details</span>' +
+    '<button type="button" class="details-close" title="Close">&times;</button></div>' +
+    '<label class="details-field"><span>Name</span>' +
+    '<input data-prop="name" type="text" placeholder="label"></label>' +
+    '<label class="details-field"><span>Datetime</span>' +
+    '<input data-prop="datetime" type="text" placeholder="1920 or 2020-03~"></label>' +
+    '<label class="details-field"><span>Start</span>' +
+    '<input data-prop="start" type="text" placeholder="1900 or .."></label>' +
+    '<label class="details-field"><span>End</span>' +
+    '<input data-prop="end" type="text" placeholder="1950 or .."></label>' +
+    '<div class="details-hint"></div>';
+  const detailsInputs = Array.from(detailsCard.querySelectorAll("input"));
+  const detailsHint = detailsCard.querySelector(".details-hint");
+  let selectedLayer = null;
+
+  const detailsPopup = L.popup({
+    closeButton: false,
+    closeOnClick: false, // closing is handled by the map click below
+    className: "details-popup",
+    minWidth: 240
+  });
+  detailsPopup.on("remove", () => { // fires on every close path (button, Esc, ...)
+    if (selectedLayer) {
+      if (selectedLayer.setStyle) { selectedLayer.setStyle({ color: "#0284c7", weight: 2 }); }
+      selectedLayer = null;
+    }
+  });
+
+  function closeDetails() {
+    detailsPopup.remove();
+  }
+
+  function selectFeature(layer, latlng) {
+    if (selectedLayer === layer) { return; } // keep card and input focus as-is
+    closeDetails();
+    selectedLayer = layer;
+    // Geoman hands us raw layers until the next full render - attach a
+    // minimal feature so properties can attach; toGeoJSON() keeps them
+    // (Leaflet merges layer.feature.properties over fresh geometry).
+    if (!layer.feature) {
+      layer.feature = { type: "Feature", properties: {}, geometry: layer.toGeoJSON().geometry };
+    }
+    if (layer.setStyle) { layer.setStyle({ color: "#7c3aed", weight: 4 }); } // markers can't be restyled
+    const props = layer.feature.properties || {};
+    detailsInputs.forEach(input => {
+      const v = props[input.dataset.prop];
+      input.value = v == null ? "" : String(v);
+      input.classList.remove("invalid");
+    });
+    detailsHint.textContent = "";
+    detailsPopup.setContent(detailsCard).setLatLng(latlng).openOn(map);
+  }
+
+  detailsCard.querySelector(".details-close").addEventListener("click", closeDetails);
+
+  detailsInputs.forEach(input => {
+    input.addEventListener("input", () => {
+      if (!selectedLayer) { return; }
+      const prop = input.dataset.prop;
+      const props = selectedLayer.feature.properties || (selectedLayer.feature.properties = {});
+      if (input.value) { props[prop] = input.value; } else { delete props[prop]; }
+      const invalid = prop !== "name" && input.value !== "" && !parseEdtf(input.value);
+      input.classList.toggle("invalid", invalid); // warn only - the value is kept
+      detailsHint.textContent = invalid ? "Not parseable as EDTF - stored as-is" : "";
+      scheduleMapSync(); // debounced: map -> editor text -> LocalStorage
+    });
+  });
+
+  map.on("click", e => {
+    // Feature clicks also propagate to the map (bubblingMouseEvents), so a
+    // plain map-click close would instantly undo the card selectFeature just
+    // opened in the same event. Skip any click that landed on an interactive
+    // layer; only genuinely empty map clicks deselect.
+    const t = e.originalEvent.target;
+    if (t && t.closest && t.closest(".leaflet-interactive")) { return; }
+    closeDetails();
+  });
+
   // Load persisted GeoJSON (or the empty collection) before CM takes over.
   const savedText = loadSavedText();
   textarea.value = savedText ? savedText : EMPTY_GEOJSON_TEXT;
@@ -1094,7 +1269,10 @@
       wireGeomanSync(e.layer);
       scheduleMapSync();
     });
-    map.on("pm:remove", scheduleMapSync);
+    map.on("pm:remove", e => {
+      if (e.layer === selectedLayer) { closeDetails(); }
+      scheduleMapSync();
+    });
   } else {
     setStatus("Geoman CDN failed to load - drawing disabled", true);
   }
