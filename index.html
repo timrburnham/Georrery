@@ -431,6 +431,99 @@
     outline: none;
   }
 
+  #text-input[hidden] { display: none; }
+
+  /* Rendered Markdown preview, toggled by the bottom tabs. Proportional type
+     for reading; the editor keeps the panel's monospace font. */
+  #text-md {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    border-top: 1px solid #cbd5e1;
+    padding: 10px 14px;
+    font: 14px/1.6 system-ui, "Segoe UI", Roboto, sans-serif;
+    color: #0f172a;
+    background: transparent;
+  }
+
+  #text-md[hidden] { display: none; }
+
+  #text-md :first-child { margin-top: 0; }
+
+  #text-md h1, #text-md h2, #text-md h3, #text-md h4, #text-md h5, #text-md h6 {
+    margin: 1em 0 .4em;
+    line-height: 1.3;
+    color: #1e293b;
+  }
+
+  #text-md h1 { font-size: 1.5em; }
+  #text-md h2 { font-size: 1.3em; }
+  #text-md h3 { font-size: 1.15em; }
+
+  #text-md p { margin: .5em 0; }
+
+  #text-md ul, #text-md ol { margin: .5em 0; padding-left: 1.6em; }
+  #text-md li { margin: .2em 0; }
+
+  #text-md blockquote {
+    margin: .6em 0;
+    padding: .1em .9em;
+    border-left: 3px solid #94a3b8;
+    color: #475569;
+  }
+
+  #text-md code {
+    font: .9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #e2e8f0;
+    border-radius: 3px;
+    padding: .1em .3em;
+  }
+
+  #text-md pre {
+    margin: .6em 0;
+    padding: .6em .8em;
+    background: #e2e8f0;
+    border-radius: 6px;
+    overflow: auto;
+  }
+
+  #text-md pre code { background: none; padding: 0; }
+
+  #text-md a { color: #0369a1; }
+  #text-md img { max-width: 100%; }
+
+  #text-md table { border-collapse: collapse; margin: .6em 0; }
+  #text-md th, #text-md td { border: 1px solid #cbd5e1; padding: .25em .6em; }
+
+  #text-md hr { border: none; border-top: 1px solid #cbd5e1; margin: 1em 0; }
+
+  /* bottom tab strip: flips the panel between the editor and the preview */
+  #text-tabs {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 2px;
+    padding: 6px 10px 8px;
+    border-top: 1px solid #cbd5e1;
+  }
+
+  #text-tabs button {
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: none;
+    padding: 3px 12px;
+    font: .75rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: #64748b;
+    cursor: pointer;
+  }
+
+  #text-tabs button:hover { color: #0f172a; background: #e2e8f0; }
+
+  #text-tabs button[aria-selected="true"] {
+    background: #e2e8f0;
+    border-color: #cbd5e1;
+    color: #0f172a;
+  }
+
   /* ---- Geoman toolbar ---- */
   /* While the GeoJSON text has unsaved edits it owns the data: the drawing
      toolbar is hidden and active modes are cancelled (see setGeomanEnabled).
@@ -733,6 +826,13 @@
       <button id="text-oops-btn" type="button" title="Discard unsaved text edits">Oops</button>
     </div>
     <textarea id="text-input" spellcheck="false" aria-label="Feature text" placeholder="Free-form text"></textarea>
+    <div id="text-md" hidden aria-label="Rendered Markdown preview"></div>
+    <div id="text-tabs" role="tablist" aria-label="Text panel view">
+      <button id="text-tab-edit" type="button" role="tab" aria-selected="true"
+              title="Edit the raw text">Edit</button>
+      <button id="text-tab-preview" type="button" role="tab" aria-selected="false"
+              title="Render the text as Markdown">Preview</button>
+    </div>
   </div>
 </div>
 
@@ -768,6 +868,16 @@
         crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/addon/edit/matchbrackets.min.js"
         integrity="sha512-ynfHqOx3h/V0CDEdHKHdS4C0Kp5tcpILVbUOqNczDbRDiKqrMx3mONwyFHcMmOs43MMiGfD9gDjbvnQ5fOZxvw=="
+        crossorigin="anonymous"></script>
+<!-- Markdown preview for the feature Text panel: marked renders to HTML and
+     DOMPurify sanitizes it (marked passes raw HTML through by design - its
+     documented pairing). UMD globals; the preview tab degrades to escaped
+     plain text if either fails to load. -->
+<script src="https://cdn.jsdelivr.net/npm/marked@18.0.11/lib/marked.umd.js"
+        integrity="sha384-N2BlPYJH0HRuJRIZOGNTL/ymqHb++FCViUqW4rdB5/7fH+KvFTqyCvPPQ8X4nElj"
+        crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.14/dist/purify.min.js"
+        integrity="sha384-46dPGH1XlTmj7bc50bqLjTdORXs/3EP2QpA/6EWbelYWOY9VGp+87RT61S3Mcslb"
         crossorigin="anonymous"></script>
 <script>
 (() => {
@@ -1429,6 +1539,9 @@
   const textUpdateBtn = document.getElementById("text-update-btn");
   const textOopsBtn = document.getElementById("text-oops-btn");
   const textPreview = detailsCard.querySelector(".details-text");
+  const textMd = document.getElementById("text-md");
+  const textTabEdit = document.getElementById("text-tab-edit");
+  const textTabPreview = document.getElementById("text-tab-preview");
 
   const storedText = layer => {
     const t = layer && layer.feature && layer.feature.properties ?
@@ -1477,6 +1590,7 @@
   function openTextPanel() {
     textInput.value = normalized(storedText(selectedLayer));
     refreshTextButtons();
+    setTextTab("edit"); // the panel opens on the editor, never auto-focused
     textPanel.classList.add("open");
     document.body.classList.add("text-open");
     animateInvalidateSize();
@@ -1501,7 +1615,47 @@
     e.stopPropagation();
     textInput.value = normalized(storedText(selectedLayer));
     refreshTextButtons();
+    if (!textMd.hidden) { renderTextMarkdown(); } // Oops may run while previewing
   });
+
+  // ---- bottom tabs: flip the panel between editor and Markdown preview ----
+  // The preview always renders the textarea's current value, so unsaved edits
+  // are visible without committing. marked passes raw HTML through by design,
+  // so the output is sanitized with DOMPurify (marked's documented pairing).
+  // If either CDN library failed to load, the tab degrades to escaped
+  // plain-text preview instead of rendered (and unsanitized) HTML.
+  const markdownReady = typeof marked !== "undefined" && typeof DOMPurify !== "undefined";
+
+  function renderTextMarkdown() {
+    if (markdownReady) {
+      // single newlines become <br>: free-form notes read as typed
+      textMd.innerHTML = DOMPurify.sanitize(marked.parse(textInput.value, { breaks: true }));
+      // keep links from navigating the map app away
+      textMd.querySelectorAll("a[href]").forEach(a => {
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+      });
+    } else {
+      textMd.textContent = textInput.value;
+      textMd.title = "Markdown renderer unavailable - showing plain text";
+    }
+  }
+
+  function setTextTab(mode, focus) {
+    const preview = mode === "preview";
+    textInput.hidden = preview;
+    textMd.hidden = !preview;
+    textTabEdit.setAttribute("aria-selected", String(!preview));
+    textTabPreview.setAttribute("aria-selected", String(preview));
+    if (preview) {
+      renderTextMarkdown();
+    } else if (focus) {
+      textInput.focus();
+    }
+  }
+
+  textTabEdit.addEventListener("click", () => setTextTab("edit", true));
+  textTabPreview.addEventListener("click", () => setTextTab("preview", true));
 
   // Keep the map's right inset equal to the panel's actual rendered width
   // (the min(90vw, 150ch) formula resolves against the panel's own font, so
