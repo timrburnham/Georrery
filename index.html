@@ -1177,11 +1177,15 @@
     if (e.key === "Enter") {
       if (e.defaultPrevented) { return; } // Geoman just committed an in-progress shape
       // Enter dismisses the current overlay: a still-active Geoman mode
-      // (stop dropping more shapes) first, otherwise the details card.
+      // (stop dropping more shapes) first, then the details card. With
+      // nothing left to dismiss but an open panel, it jumps into the text.
       if (cancelActiveModes()) { e.preventDefault(); return; }
-      if (!selectedLayer) { return; }
-      e.preventDefault();
-      commitDetails();
+      if (selectedLayer) { e.preventDefault(); commitDetails(); return; }
+      if (panel.classList.contains("open") &&
+          !(t && t.closest && t.closest("button, input, select, textarea, a, [contenteditable]"))) {
+        e.preventDefault();
+        (cm || textarea).focus();
+      }
       return;
     }
     // Space toggles the GeoJSON panel, unless focus is somewhere Space
@@ -1355,7 +1359,9 @@
   }
 
   panelBar.addEventListener("click", () => {
-    if (panel.classList.contains("open")) { collapsePanel(); } else { openPanel(); }
+    // opens without grabbing the caret (same as the Space shortcut); Enter
+    // is the way to jump into the text once the panel is open
+    if (panel.classList.contains("open")) { collapsePanel(); } else { openPanel(false); }
   });
 
   // ---- Header menu: brand click slides the whole strip right, trading the
@@ -1387,9 +1393,24 @@
   });
 
   if (cm) {
-    // Keep Leaflet keyboard shortcuts from firing while typing in the editor.
+    // Keep Leaflet keyboard shortcuts from firing while typing in the editor,
+    // and let Escape drop the caret back out (global shortcuts resume after).
     ["keydown", "keyup", "keypress"].forEach(type => {
-      cm.getWrapperElement().addEventListener(type, e => { e.stopPropagation(); });
+      cm.getWrapperElement().addEventListener(type, e => {
+        if (type === "keydown" && e.key === "Escape" && !e.isComposing) {
+          e.preventDefault();
+          cm.getInputField().blur(); // focus lives on CM's hidden input
+        }
+        e.stopPropagation();
+      });
+    });
+  } else {
+    setStatus("CodeMirror CDN failed to load - plain text mode", true);
+    textarea.addEventListener("keydown", e => { // plain fallback: same Escape blur
+      if (e.key === "Escape" && !e.isComposing) {
+        e.preventDefault();
+        textarea.blur();
+      }
     });
   }
 
