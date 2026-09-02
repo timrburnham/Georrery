@@ -362,6 +362,22 @@
     font-size: .85em;
   }
 
+  /* ---- permanent feature name labels (Leaflet tooltips) ---- */
+  .name-label {
+    max-width: 240px;
+    white-space: pre-line; /* long names wrap instead of stretching the pill */
+    background: rgba(255,255,255,.88);
+    border: none;
+    border-radius: 4px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.3);
+    color: #0f172a;
+    font: 600 .7rem/1.25 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 1px 5px;
+  }
+
+  /* drop the default arrow: labels float free of their anchor point */
+  .leaflet-tooltip.name-label::before { display: none; }
+
   /* ---- time filter card ---- */
   .time-card {
     background: rgba(255,255,255,.95);
@@ -714,7 +730,48 @@
     return html;
   }
 
-  // Shared L.GeoJSON / L.timeline options; wireGeoman adds the map-edit sync.
+  // ---- permanent "name" labels on the shapes ----
+  // Rendered beside points and centered on lines, polygons, and multi-part
+  // features. Tooltips are pointer-events:none, so clicks fall through to
+  // the shape (details card) underneath. Tooltip content goes through
+  // innerHTML, so names are HTML-escaped like popups. Labels live on the
+  // working layers only - playback copies keep their hover popups (no
+  // duplicate labels on the map).
+  function hasName(feature) {
+    const n = feature && feature.properties && feature.properties.name;
+    return n != null && String(n).trim() !== "";
+  }
+
+  function nameLabelOptions(layer) {
+    // LineString/Polygon render as L.Polyline; Multi* parts arrive as a
+    // (Feature)Group - both get a centered label. Everything else is a
+    // point: direction "auto" hugs the marker and flips at map edges.
+    const centered = layer instanceof L.Polyline || layer instanceof L.LayerGroup;
+    return centered
+      ? { permanent: true, direction: "center", className: "name-label" }
+      : { permanent: true, offset: [10, 0], className: "name-label" };
+  }
+
+  function bindNameLabel(feature, layer) {
+    if (!hasName(feature) || !layer.bindTooltip) { return; }
+    layer.bindTooltip(escapeHtml(String(feature.properties.name)), nameLabelOptions(layer));
+  }
+
+  // Keeps a layer's label in step: name edits from the details card
+  // (add / rename / clear) and first-time labels on freshly drawn shapes.
+  function syncNameLabel(layer) {
+    if (!layer.bindTooltip) { return; }
+    const tooltip = layer.getTooltip();
+    if (hasName(layer.feature)) {
+      if (tooltip) { layer.setTooltipContent(escapeHtml(String(layer.feature.properties.name))); }
+      else { bindNameLabel(layer.feature, layer); }
+    } else if (tooltip) {
+      layer.unbindTooltip();
+    }
+  }
+
+  // Shared L.GeoJSON / L.timeline options; wireGeoman adds the map-edit
+  // sync plus the permanent name labels (working layers only).
   function layerOptions(color, wireGeoman) {
     return {
       style: () => ({ color, weight: 2, fillOpacity: 0.25 }),
@@ -722,6 +779,7 @@
       onEachFeature: (feature, layer) => {
         if (wireGeoman) {
           wireGeomanSync(layer);
+          bindNameLabel(feature, layer);
         } else {
           const html = popupHtml(feature); // read-only summary on playback copies
           if (html) { layer.bindPopup(html, { className: "feat-popup" }); }
@@ -929,6 +987,12 @@
   }
 
   function setVisible(layer, visible) {
+    // Permanent labels are their own map layer, so they must follow the
+    // shape's visibility; openTooltip() also re-anchors after edits.
+    if (layer.getTooltip && layer.getTooltip()) {
+      if (visible && map.hasLayer(layer)) { layer.openTooltip(); }
+      else { layer.closeTooltip(); }
+    }
     if (layer.getLayers) {          // Multi* geometries arrive as groups
       layer.getLayers().forEach(l => setVisible(l, visible));
       return;
@@ -1106,7 +1170,7 @@
   // the property. While the GeoJSON text is dirty the card is display-only.
   const detailsCard = L.DomUtil.create("div", "details-card");
   detailsCard.innerHTML =
-    '<div class="details-head"><span>Feature details</span>' +
+    '<div class="details-head"><span>Facts</span>' +
     '<button type="button" class="details-close" title="Close">&times;</button></div>' +
     '<label class="details-field"><span>Name</span>' +
     '<input data-prop="name" type="text" placeholder="label"></label>' +
@@ -1241,6 +1305,7 @@
       const prop = input.dataset.prop;
       const props = selectedLayer.feature.properties || (selectedLayer.feature.properties = {});
       if (input.value) { props[prop] = input.value; } else { delete props[prop]; }
+      if (prop === "name") { syncNameLabel(selectedLayer); } // keep the on-shape label in step
       const invalid = prop !== "name" && input.value !== "" && !parseEdtf(input.value);
       input.classList.toggle("invalid", invalid); // warn only - the value is kept
       detailsHint.textContent = invalid ? "Not parseable as EDTF - stored as-is" : "";
@@ -1471,7 +1536,11 @@
     }
     // pm:edit / pm:dragend / pm:rotateend are LAYER events in Geoman (only
     // create/cut/remove fire on the map), so every feature gets its own listeners.
-    layer.on("pm:edit pm:dragend pm:rotateend", scheduleMapSync);
+    layer.on("pm:edit pm:dragend pm:rotateend", () => {
+      const tt = layer.getTooltip();
+      if (tt && map.hasLayer(tt)) { layer.openTooltip(); } // re-anchor the label after the shape moved
+      scheduleMapSync();
+    });
     layer.on("click", e => selectFeature(layer, e.latlng)); // opens the details card
   }
 
@@ -1528,6 +1597,9 @@
       if (!dataLayer) { renderData({ type: "FeatureCollection", features: [] }); }
       addSerialized(e.layer);
       wireGeomanSync(e.layer);
+      // cut pieces can inherit the original's properties - label them too
+      const pieces = e.layer instanceof L.LayerGroup ? e.layer.getLayers() : [e.layer];
+      pieces.forEach(l => bindNameLabel(l.feature, l));
       scheduleMapSync();
     });
     map.on("pm:remove", e => {
