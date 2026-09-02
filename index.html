@@ -408,6 +408,8 @@
     align-items: center;
     gap: 10px;
     padding: 12px 12px 8px;
+    cursor: pointer; /* clicking anywhere above the divider closes the panel */
+    user-select: none;
   }
 
   #text-bar h2 {
@@ -820,8 +822,8 @@
   </div>
 
   <div id="text-panel">
-    <div id="text-bar">
-      <h2>Text</h2>
+    <div id="text-bar" title="Close the text panel">
+      <h2 id="text-title">Text</h2>
       <button id="text-update-btn" type="button" title="Save the text onto the feature">Update</button>
       <button id="text-oops-btn" type="button" title="Discard unsaved text edits">Oops</button>
     </div>
@@ -1518,7 +1520,10 @@
       const prop = input.dataset.prop;
       const props = selectedLayer.feature.properties || (selectedLayer.feature.properties = {});
       if (input.value) { props[prop] = input.value; } else { delete props[prop]; }
-      if (prop === "name") { syncNameLabel(selectedLayer); } // keep the on-shape label in step
+      if (prop === "name") {
+        syncNameLabel(selectedLayer); // keep the on-shape label in step
+        refreshTextTitle(); // and the text panel header, if it is open
+      }
       const invalid = prop !== "name" && input.value !== "" && !parseEdtf(input.value);
       input.classList.toggle("invalid", invalid); // warn only - the value is kept
       detailsHint.textContent = invalid ? "Not parseable as EDTF - stored as-is" : "";
@@ -1538,6 +1543,8 @@
   const textInput = document.getElementById("text-input");
   const textUpdateBtn = document.getElementById("text-update-btn");
   const textOopsBtn = document.getElementById("text-oops-btn");
+  const textBar = document.getElementById("text-bar");
+  const textTitle = document.getElementById("text-title");
   const textPreview = detailsCard.querySelector(".details-text");
   const textMd = document.getElementById("text-md");
   const textTabEdit = document.getElementById("text-tab-edit");
@@ -1587,9 +1594,18 @@
     requestAnimationFrame(tick);
   }
 
+  // Panel header: the feature's name when one is set, else the generic
+  // "Text". textContent, so no escaping is needed (unlike tooltip labels).
+  function refreshTextTitle() {
+    textTitle.textContent = selectedLayer && hasName(selectedLayer.feature)
+      ? String(selectedLayer.feature.properties.name)
+      : "Text";
+  }
+
   function openTextPanel() {
     textInput.value = normalized(storedText(selectedLayer));
     refreshTextButtons();
+    refreshTextTitle();
     setTextTab("edit"); // the panel opens on the editor, never auto-focused
     textPanel.classList.add("open");
     document.body.classList.add("text-open");
@@ -1610,6 +1626,9 @@
   });
 
   textInput.addEventListener("input", refreshTextButtons);
+  // Clicking anywhere above the divider (title or empty bar space) closes the
+  // panel; Update / Oops stop propagation, so they never trigger this.
+  textBar.addEventListener("click", closeTextPanel);
   textUpdateBtn.addEventListener("click", e => { e.stopPropagation(); commitText(); });
   textOopsBtn.addEventListener("click", e => {
     e.stopPropagation();
