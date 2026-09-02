@@ -122,8 +122,14 @@
   #map {
     position: absolute;
     inset: 0;
+    /* the right edge pulls in while the text panel is open; --text-panel-w
+       is the panel's rendered width, measured by JS (min(90vw, 150ch)
+       resolves against the panel's own monospace font) */
+    transition: right .3s ease;
     background: #a8c8e0;
   }
+
+  body.text-open #map { right: var(--text-panel-w, 0px); }
 
   /* ---- GeoJSON panel ---- */
   #panel {
@@ -169,7 +175,9 @@
   }
 
   #update-btn,
-  #nevermind-btn {
+  #nevermind-btn,
+  #text-update-btn,
+  #text-oops-btn {
     flex: 0 0 auto;
     border: none;
     border-radius: 999px;
@@ -185,10 +193,13 @@
     transition: opacity .25s ease, transform .25s ease, background-color .15s ease;
   }
 
-  #nevermind-btn { background: #64748b; }
+  #nevermind-btn,
+  #text-oops-btn { background: #64748b; }
 
   #update-btn.show,
-  #nevermind-btn.show {
+  #nevermind-btn.show,
+  #text-update-btn.show,
+  #text-oops-btn.show {
     opacity: 1;
     transform: translateX(0);
     pointer-events: auto;
@@ -199,8 +210,10 @@
     cursor: not-allowed;
   }
 
-  #update-btn:not(:disabled):hover { background: #0369a1; }
-  #nevermind-btn:not(:disabled):hover { background: #475569; }
+  #update-btn:not(:disabled):hover,
+  #text-update-btn:hover { background: #0369a1; }
+  #nevermind-btn:not(:disabled):hover,
+  #text-oops-btn:hover { background: #475569; }
 
   #panel-status {
     flex: 1 1 auto;
@@ -323,7 +336,31 @@
     color: #dc2626;
   }
 
-  body.geojson-dirty .details-card input { opacity: .5; pointer-events: none; }
+  /* single-line text preview at the bottom of the card: the stored first
+     line, grayed and truncated, or the italic word "Text" when empty.
+     Clicking toggles the text panel. */
+  .details-text {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    border: none;
+    background: none;
+    padding: 0;
+    font: inherit;
+    color: #94a3b8;
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .details-text.placeholder { font-style: italic; }
+
+  .details-text:hover { color: #64748b; }
+
+  body.geojson-dirty .details-card input,
+  body.geojson-dirty .details-text { opacity: .5; pointer-events: none; }
   body.geojson-dirty .details-hint::before {
     content: "Paused - resolve the GeoJSON text first (Update / Never mind)";
     color: #64748b;
@@ -339,6 +376,60 @@
   .details-popup .leaflet-popup-content { margin: 0; line-height: 1.4; }
 
   .details-popup .leaflet-popup-tip { display: none; }
+
+  /* ---- feature text panel ---- */
+  /* Long free-form "text" property. Slides in from the right over .3s while
+     the map's right edge pulls in by the same amount (body.text-open). The
+     width tracks the editor font: ~150 characters on desktop, ~90% of the
+     viewport on phones. Edits stay local until Update / Oops; closing the
+     panel commits pending edits so nothing typed is lost. Not auto-focused. */
+  #text-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(90vw, 150ch);
+    z-index: 1100;
+    display: flex;
+    flex-direction: column;
+    background: #f8fafc;
+    border-left: 1px solid #cbd5e1;
+    box-shadow: -6px 0 24px rgba(0,0,0,.25);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    transform: translateX(100%);
+    transition: transform .3s ease;
+  }
+
+  #text-panel.open { transform: translateX(0); }
+
+  #text-bar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 12px 8px;
+  }
+
+  #text-bar h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #1e293b;
+  }
+
+  #text-input {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: block;
+    width: 100%;
+    resize: none;
+    border: none;
+    border-top: 1px solid #cbd5e1;
+    padding: 10px 12px;
+    font: inherit;
+    color: #0f172a;
+    background: transparent;
+    outline: none;
+  }
 
   /* ---- Geoman toolbar ---- */
   /* While the GeoJSON text has unsaved edits it owns the data: the drawing
@@ -633,6 +724,15 @@
     <div id="panel-body">
       <textarea id="geojson-input" spellcheck="false"></textarea>
     </div>
+  </div>
+
+  <div id="text-panel">
+    <div id="text-bar">
+      <h2>Text</h2>
+      <button id="text-update-btn" type="button" title="Save the text onto the feature">Update</button>
+      <button id="text-oops-btn" type="button" title="Discard unsaved text edits">Oops</button>
+    </div>
+    <textarea id="text-input" spellcheck="false" aria-label="Feature text" placeholder="Free-form text"></textarea>
   </div>
 </div>
 
@@ -1180,7 +1280,8 @@
     '<input data-prop="start" type="text" placeholder="1900 or .."></label>' +
     '<label class="details-field"><span>End</span>' +
     '<input data-prop="end" type="text" placeholder="1950 or .."></label>' +
-    '<div class="details-hint"></div>';
+    '<div class="details-hint"></div>' +
+    '<button type="button" class="details-text" title="Show / hide the text panel"></button>';
   const detailsInputs = Array.from(detailsCard.querySelectorAll("input"));
   const detailsHint = detailsCard.querySelector(".details-hint");
   let selectedLayer = null;
@@ -1199,6 +1300,7 @@
   });
 
   function closeDetails() {
+    closeTextPanel(); // commits a pending text-panel edit before selection is dropped
     detailsPopup.remove();
   }
 
@@ -1248,7 +1350,7 @@
   document.addEventListener("keydown", e => {
     if (e.isComposing) { return; }
     const t = e.target;
-    if (t && t.closest && t.closest(".CodeMirror, #geojson-input")) { return; }
+    if (t && t.closest && t.closest(".CodeMirror, #geojson-input, #text-input")) { return; }
     if (e.key === "Enter") {
       if (e.defaultPrevented) { return; } // Geoman just committed an in-progress shape
       // Enter dismisses the current overlay: a still-active Geoman mode
@@ -1294,6 +1396,7 @@
       input.classList.remove("invalid");
     });
     detailsHint.textContent = "";
+    refreshTextPreview();
     detailsPopup.setContent(detailsCard).setLatLng(latlng).openOn(map);
   }
 
@@ -1312,6 +1415,107 @@
       scheduleMapSync(); // debounced: map -> editor text -> LocalStorage
     });
   });
+
+  // ---- Feature text panel (long free-form "text" property) ----
+  // Opened from the preview line at the bottom of the details card; the map
+  // shrinks from the right to reveal a full-height editor. Edits stay local
+  // (dirty -> Update / Oops beside the title) and closing commits them, so
+  // nothing typed is lost. Textareas normalize \r\n and \r to \n, so
+  // dirtiness compares against the normalized stored value: merely opening
+  // CRLF text never marks it dirty, and untouched bytes are never rewritten.
+  const mapWrap = document.getElementById("map-wrap");
+  const textPanel = document.getElementById("text-panel");
+  const textInput = document.getElementById("text-input");
+  const textUpdateBtn = document.getElementById("text-update-btn");
+  const textOopsBtn = document.getElementById("text-oops-btn");
+  const textPreview = detailsCard.querySelector(".details-text");
+
+  const storedText = layer => {
+    const t = layer && layer.feature && layer.feature.properties ?
+      layer.feature.properties.text : null;
+    return t == null ? "" : String(t);
+  };
+  const normalized = s => s.replace(/\r\n|\r/g, "\n");
+
+  function refreshTextPreview() {
+    const first = storedText(selectedLayer).split(/\r\n|\r|\n/, 1)[0];
+    const shown = first.trim() ? first : "";
+    textPreview.textContent = shown || "Text";
+    textPreview.classList.toggle("placeholder", !shown);
+  }
+
+  function refreshTextButtons() {
+    const dirty = Boolean(selectedLayer) &&
+      textInput.value !== normalized(storedText(selectedLayer));
+    textUpdateBtn.classList.toggle("show", dirty);
+    textOopsBtn.classList.toggle("show", dirty);
+  }
+
+  // Writes the editor's value onto the selected feature (blank removes the
+  // property) and rides the standard debounced map -> text sync.
+  function commitText() {
+    if (!selectedLayer) { return; }
+    if (textInput.value !== normalized(storedText(selectedLayer))) {
+      const props = selectedLayer.feature.properties || (selectedLayer.feature.properties = {});
+      if (textInput.value) { props.text = textInput.value; } else { delete props.text; }
+      refreshTextPreview();
+      scheduleMapSync();
+    }
+    refreshTextButtons();
+  }
+
+  // Leaflet must track the CSS transition, not just its end state.
+  function animateInvalidateSize() {
+    const start = performance.now();
+    const tick = () => {
+      map.invalidateSize(); // keeps the center while the viewport resizes
+      if (performance.now() - start < 350) { requestAnimationFrame(tick); }
+    };
+    requestAnimationFrame(tick);
+  }
+
+  function openTextPanel() {
+    textInput.value = normalized(storedText(selectedLayer));
+    refreshTextButtons();
+    textPanel.classList.add("open");
+    document.body.classList.add("text-open");
+    animateInvalidateSize();
+  }
+
+  function closeTextPanel() {
+    if (!textPanel.classList.contains("open")) { return; }
+    commitText();
+    textPanel.classList.remove("open");
+    document.body.classList.remove("text-open");
+    animateInvalidateSize();
+  }
+
+  textPreview.addEventListener("click", () => {
+    if (!selectedLayer) { return; }
+    if (textPanel.classList.contains("open")) { closeTextPanel(); } else { openTextPanel(); }
+  });
+
+  textInput.addEventListener("input", refreshTextButtons);
+  textUpdateBtn.addEventListener("click", e => { e.stopPropagation(); commitText(); });
+  textOopsBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    textInput.value = normalized(storedText(selectedLayer));
+    refreshTextButtons();
+  });
+
+  // Keep the map's right inset equal to the panel's actual rendered width
+  // (the min(90vw, 150ch) formula resolves against the panel's own font, so
+  // JS measures the element instead of duplicating the math).
+  const syncTextPanelWidth = () => {
+    mapWrap.style.setProperty("--text-panel-w", `${textPanel.offsetWidth}px`);
+    if (textPanel.classList.contains("open")) { animateInvalidateSize(); }
+  };
+  syncTextPanelWidth();
+  if (window.ResizeObserver) {
+    new ResizeObserver(syncTextPanelWidth).observe(textPanel);
+  } else {
+    window.addEventListener("resize", syncTextPanelWidth);
+  }
 
   map.on("click", e => {
     // Feature clicks also propagate to the map (bubblingMouseEvents), so a
@@ -1614,6 +1818,7 @@
     clearTimeout(statusTimer);
     clearTimeout(viewSaveTimer);
     clearTimeout(mapSyncTimer);
+    commitText(); // flush a pending text-panel edit (self-skips with nothing selected/dirty)
     syncNow();  // flush a pending map edit (self-skips while the text is dirty)
     saveView(); // unsaved text edits are intentionally discarded
   });
