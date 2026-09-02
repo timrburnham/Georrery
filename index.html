@@ -1170,6 +1170,17 @@
     return true;
   }
 
+  // Digit keys toggle Geoman tools, in toolbar order (button titles show
+  // the digit). Pressing a tool's digit again turns it back off - the
+  // toolbar button itself is clicked so Geoman owns the toggle state.
+  const TOOL_KEYS = {
+    "1": "marker", "2": "polyline", "3": "polygon", "4": "rectangle",
+    "5": "edit", "6": "drag", "7": "rotate", "8": "cut", "9": "delete"
+  };
+  // keys that mean something special to the element they're on
+  const onFormControl = t => !!(t && t.closest &&
+    t.closest("button, input, select, textarea, a, [contenteditable]"));
+
   document.addEventListener("keydown", e => {
     if (e.isComposing) { return; }
     const t = e.target;
@@ -1181,20 +1192,23 @@
       // nothing left to dismiss but an open panel, it jumps into the text.
       if (cancelActiveModes()) { e.preventDefault(); return; }
       if (selectedLayer) { e.preventDefault(); commitDetails(); return; }
-      if (panel.classList.contains("open") &&
-          !(t && t.closest && t.closest("button, input, select, textarea, a, [contenteditable]"))) {
+      if (panel.classList.contains("open") && !onFormControl(t)) {
         e.preventDefault();
         (cm || textarea).focus();
       }
       return;
     }
-    // Space toggles the GeoJSON panel, unless focus is somewhere Space
-    // already means something (button re-click, input caret, select, ...).
-    // It opens without stealing the caret, so Space-Space closes again.
-    if (e.key === " " &&
-        !(t && t.closest && t.closest("button, input, select, textarea, a, [contenteditable]"))) {
+    if (onFormControl(t)) { return; }
+    // Space toggles the GeoJSON panel. It opens without stealing the
+    // caret, so Space-Space closes again.
+    if (e.key === " ") {
       e.preventDefault();
       if (panel.classList.contains("open")) { collapsePanel(); } else { openPanel(false); }
+      return;
+    }
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && TOOL_KEYS[e.key]) {
+      const btn = document.querySelector(`.leaflet-pm-icon-${TOOL_KEYS[e.key]}`);
+      if (btn) { e.preventDefault(); btn.click(); }
     }
   });
 
@@ -1504,6 +1518,11 @@
     // polygon, started rectangle) and keeps the mode running for the next
     // one. Point-and-click tools (marker, ...) never commit on Enter.
     map.pm.setGlobalOptions({ exitModeOnEscape: true, finishOnEnter: true });
+    // advertise the digit shortcuts (TOOL_KEYS) on the toolbar tooltips
+    Object.values(TOOL_KEYS).forEach((name, i) => {
+      const btn = document.querySelector(`.leaflet-pm-icon-${name}`);
+      if (btn) { btn.title = `${btn.title || name} (${i + 1})`; }
+    });
 
     map.on("pm:create pm:cut", e => {
       if (!dataLayer) { renderData({ type: "FeatureCollection", features: [] }); }
