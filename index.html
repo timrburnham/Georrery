@@ -89,7 +89,6 @@
   header h1 span { color: #38bdf8; }
 
   #overlay-select-wrap {
-    margin-left: auto;
     display: flex;
     align-items: center;
   }
@@ -112,6 +111,60 @@
     background: #1e293b;
     color: #f1f5f9;
   }
+
+  /* ---- "+ Data" URL loader ---- */
+  /* The input parks tucked under the button's left edge (6px overlap) and
+     widens out from behind it when opened; the header clips it at both
+     edges, so it never escapes the strip. */
+  #data-wrap {
+    position: relative;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    margin-left: auto; /* parks the button right beside the overlay dropdown */
+  }
+
+  #data-btn {
+    position: relative; /* paints above the tucked-in input */
+    border: 1px solid #475569;
+    background: #334155;
+    color: #f1f5f9;
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: .8rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  #data-btn:hover { border-color: #38bdf8; color: #fff; }
+  #data-btn:disabled { opacity: .6; cursor: wait; }
+
+  #data-url {
+    position: absolute;
+    top: 50%;
+    right: calc(100% - 6px);
+    transform: translateY(-50%);
+    width: 0;
+    border: 1px solid #334155;
+    background: #0f172a;
+    color: #f1f5f9;
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: .85rem;
+    outline: none;
+    opacity: 0;
+    pointer-events: none;
+    transition: width .3s ease, opacity .2s ease, border-color .15s ease;
+  }
+
+  #data-url.open {
+    width: min(340px, 40vw);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  #data-url:focus { border-color: #38bdf8; }
+  #data-url.error { border-color: #dc2626; }
 
   #map-wrap {
     flex: 1 1 auto;
@@ -779,6 +832,11 @@
   <div id="header-strip">
     <button type="button" id="reset-btn" title="Clear all locally stored data and the GeoJSON text">Reset</button>
     <h1 id="brand" title="Show menu">Geo<span>rrery</span></h1>
+    <div id="data-wrap">
+      <button type="button" id="data-btn" title="Load GeoJSON from a URL">+ Data</button>
+      <input id="data-url" type="url" placeholder="Paste a GeoJSON / .map URL"
+             aria-label="GeoJSON URL" autocomplete="off" spellcheck="false">
+    </div>
     <div id="overlay-select-wrap">
       <select id="overlay-select" aria-label="Map overlay">
         <option value="">No Overlay</option>
@@ -916,7 +974,9 @@
 
   function setStatus(text, isError) {
     statusEl.textContent = text;
-    statusEl.classList.toggle("error", isError);
+    // toggle(token, undefined) FLIPS in Firefox - an omitted error flag must
+    // clear the class, never toggle it
+    statusEl.classList.toggle("error", Boolean(isError));
   }
 
   function escapeHtml(s) {
@@ -1076,6 +1136,145 @@
   if (!OVERLAYS[savedOverlay]) { savedOverlay = ""; }
   overlaySelect.value = savedOverlay;
   if (savedOverlay) { setOverlay(savedOverlay); }
+
+  // ---- "+ Data": load GeoJSON from a URL into the current context ----
+  // The input parks behind the button and widens out on click; the same
+  // button (or Enter) submits, Escape closes. The fetched features are
+  // appended to the editor's FeatureCollection, rendered, and saved - the
+  // same context the editor and Geoman draw from. MediaWiki "Data:" pages
+  // render HTML around the JSON, so their URLs are pulled through the API
+  // (cross-origin via origin=*); raw .geojson / .map URLs fetch directly.
+  const dataBtn = document.getElementById("data-btn");
+  const dataUrlInput = document.getElementById("data-url");
+
+  function openDataBox() {
+    dataUrlInput.classList.add("open");
+    dataUrlInput.classList.remove("error");
+    dataUrlInput.title = "";
+    dataUrlInput.focus();
+    dataUrlInput.select(); // a second open types over the previous URL
+  }
+
+  function closeDataBox() {
+    dataUrlInput.classList.remove("open");
+    dataUrlInput.blur();
+  }
+
+  // Accepts a bare FeatureCollection, a single Feature, a GeometryCollection,
+  // an array of features, or a WikiMap .map file (the GeoJSON hides under a
+  // "data" property, feature names live in "title" -> mapped to "name").
+  function normalizeFeatures(data) {
+    if (data && typeof data === "object" && !Array.isArray(data) &&
+        data.data && !data.type) {
+      data = data.data;
+    }
+    let features = null;
+    if (Array.isArray(data)) {
+      features = data;
+    } else if (data && data.type === "FeatureCollection" && Array.isArray(data.features)) {
+      features = data.features;
+    } else if (data && data.type === "Feature") {
+      features = [data];
+    } else if (data && data.type === "GeometryCollection" && Array.isArray(data.geometries)) {
+      features = data.geometries.map(g => ({ type: "Feature", properties: {}, geometry: g }));
+    }
+    if (!features) { return null; }
+    return features.map(f => {
+      if (!f || f.type !== "Feature") { return null; }
+      const props = f.properties || (f.properties = {});
+      if (props.name == null && props.title != null) { props.name = props.title; }
+      return f;
+    }).filter(Boolean);
+  }
+
+  async function loadDataFromUrl(rawUrl) {
+    let url = String(rawUrl).trim();
+    if (!url) { return []; }
+    const mw = /^https?:\/\/commons\.wikimedia\.org\/wiki\/(Data:[^?#\s]+)/i.exec(url);
+    let viaApi = false;
+    if (mw) {
+      viaApi = true;
+      url = "https://commons.wikimedia.org/w/api.php?action=query&format=json" +
+        "&formatversion=2&origin=*&prop=revisions&rvprop=content&rvslots=main" +
+        "&titles=" + encodeURIComponent(mw[1]);
+    }
+    const res = await fetch(url, { mode: "cors" });
+    if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
+    let text = await res.text();
+    if (viaApi) {
+      const j = JSON.parse(text);
+      const page = j.query && j.query.pages && j.query.pages[0];
+      if (!page || page.missing) { throw new Error("Data page not found"); }
+      const content = page.revisions && page.revisions[0] &&
+        page.revisions[0].slots.main.content;
+      if (!content) { throw new Error("Data page has no content"); }
+      text = content;
+    }
+    let data;
+    try { data = JSON.parse(text); }
+    catch {
+      // the MediaWiki API sometimes percent-encodes page content
+      try { data = JSON.parse(decodeURIComponent(text)); }
+      catch { throw new Error("Response is not valid JSON"); }
+    }
+    const features = normalizeFeatures(data);
+    if (!features) { throw new Error("No GeoJSON features in the response"); }
+    return features;
+  }
+
+  function submitDataUrl() {
+    const url = dataUrlInput.value.trim();
+    if (!url) { closeDataBox(); return; }
+    const host = (() => { try { return new URL(url).hostname; } catch { return "URL"; } })();
+    dataBtn.disabled = true;
+    loadDataFromUrl(url)
+      .then(features => {
+        // merge into the GeoJSON context: editor text, map, storage
+        const r = parseEditor();
+        let base = r.ok ? r.data : (dataLayer ? dataLayer.toGeoJSON() : null);
+        if (!base || base.type !== "FeatureCollection") {
+          base = { type: "FeatureCollection", features: [] };
+        }
+        const merged = { type: "FeatureCollection", features: base.features.slice().concat(features) };
+        const text = JSON.stringify(merged, null, 2);
+        setEditorText(text);
+        renderData(merged);
+        lastRendered = text;
+        saveNow();
+        refreshStatus();
+        setStatus(`Loaded ${features.length} feature${features.length === 1 ? "" : "s"} from ${host}`);
+        // bring the freshly loaded data into view (the merged set may be
+        // scattered across the globe; the new features define the frame)
+        const bounds = dataLayer.getBounds();
+        if (bounds.isValid()) { map.fitBounds(bounds, { padding: [24, 24], maxZoom: 13 }); }
+        dataUrlInput.value = "";
+        closeDataBox();
+      })
+      .catch(err => {
+        dataUrlInput.classList.add("error");
+        dataUrlInput.title = err.message || String(err);
+        setStatus(`Load failed: ${err.message || err}`, true);
+      })
+      .finally(() => { dataBtn.disabled = false; });
+  }
+
+  dataBtn.addEventListener("click", () => {
+    if (dataUrlInput.classList.contains("open")) {
+      if (dataUrlInput.value.trim()) { submitDataUrl(); } else { closeDataBox(); }
+    } else {
+      openDataBox();
+    }
+  });
+
+  dataUrlInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); submitDataUrl(); }
+    else if (e.key === "Escape") { e.preventDefault(); closeDataBox(); }
+  });
+
+  dataUrlInput.addEventListener("input", () => {
+    dataUrlInput.classList.remove("error"); // typing clears the failure state
+    dataUrlInput.title = "";
+  });
 
   function parseEditor() {
     const text = editorValue();
