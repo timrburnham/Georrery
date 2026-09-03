@@ -541,13 +541,6 @@
     color: #64748b;
   }
 
-  .feat-popup .popup-time {
-    display: block;
-    margin-top: 2px;
-    color: #64748b;
-    font-size: .85em;
-  }
-
   /* ---- permanent feature name labels (Leaflet tooltips) ---- */
   .name-label {
     max-width: 240px;
@@ -930,25 +923,13 @@
     return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  function popupHtml(feature) {
-    const p = (feature && feature.properties) || {};
-    const bits = [];
-    if (p.datetime) { bits.push(String(p.datetime)); }
-    if (p.start || p.end) { bits.push(`${String(p.start || "...")} - ${String(p.end || "...")}`); }
-    let html = "";
-    if (p.name) { html += `<strong>${escapeHtml(String(p.name))}</strong>`; }
-    const t = bits.join(" | ");
-    if (t) { html += `${html ? "<br>" : ""}<span class="popup-time">${escapeHtml(t)}</span>`; }
-    return html;
-  }
-
   // ---- permanent "name" labels on the shapes ----
   // Rendered beside points and centered on lines, polygons, and multi-part
   // features. Tooltips are pointer-events:none, so clicks fall through to
   // the shape (details card) underneath. Tooltip content goes through
-  // innerHTML, so names are HTML-escaped like popups. Labels live on the
-  // working layers only - playback copies keep their hover popups (no
-  // duplicate labels on the map).
+  // innerHTML, so names are HTML-escaped. Labels live on the working layers
+  // only - during playback a copy sits on top of its hidden working original
+  // and would duplicate the label.
   function hasName(feature) {
     const n = feature && feature.properties && feature.properties.name;
     return n != null && String(n).trim() !== "";
@@ -993,8 +974,11 @@
           wireGeomanSync(layer);
           bindNameLabel(feature, layer);
         } else {
-          const html = popupHtml(feature); // read-only summary on playback copies
-          if (html) { layer.bindPopup(html, { className: "feat-popup" }); }
+          // Playback copies open the same Facts card as working shapes; the
+          // feature object is shared with the working layer, so card edits
+          // land on the real data and ride the usual map -> text sync.
+          layer.__playback = true;
+          layer.on("click", e => selectFeature(layer, e.latlng));
         }
       }
     };
@@ -1406,7 +1390,18 @@
   });
   detailsPopup.on("remove", () => { // fires on every close path (button, Esc, ...)
     if (selectedLayer) {
-      if (selectedLayer.setStyle) { selectedLayer.setStyle({ color: "#0284c7", weight: 2 }); }
+      if (selectedLayer.setStyle) {
+        let color = "#0284c7";
+        if (selectedLayer.__playback) {
+          // restore the playback look: static violet, or the redshift hue a
+          // range feature wears at the current playhead
+          const f = selectedLayer.feature;
+          color = f && f.__range && f.__interval && tlLayer
+            ? redshiftColor(f.__interval.min, f.__interval.max, tlLayer.time)
+            : "#7c3aed";
+        }
+        selectedLayer.setStyle({ color, weight: 2 });
+      }
       selectedLayer = null;
     }
   });
@@ -1490,6 +1485,13 @@
     }
   });
 
+  // The working (dataLayer) layer sharing a playback copy's feature object.
+  function workingLayerFor(playbackLayer) {
+    let found = null;
+    dataLayer.getLayers().forEach(l => { if (l.feature === playbackLayer.feature) { found = l; } });
+    return found;
+  }
+
   function selectFeature(layer, latlng) {
     if (selectedLayer === layer) { return; } // keep card and input focus as-is
     closeDetails();
@@ -1522,6 +1524,12 @@
       if (input.value) { props[prop] = input.value; } else { delete props[prop]; }
       if (prop === "name") {
         syncNameLabel(selectedLayer); // keep the on-shape label in step
+        if (selectedLayer.__playback) {
+          // mirror onto the working copy: the playback layer (and its label)
+          // is discarded when playback ends, the working label persists
+          const wl = workingLayerFor(selectedLayer);
+          if (wl) { syncNameLabel(wl); }
+        }
         refreshTextTitle(); // and the text panel header, if it is open
       }
       const invalid = prop !== "name" && input.value !== "" && !parseEdtf(input.value);
@@ -1603,6 +1611,9 @@
   }
 
   function openTextPanel() {
+    // the two side panels fight for the same map area; opening Text
+    // collapses the GeoJSON panel (without touching its edit state)
+    if (panel.classList.contains("open")) { collapsePanel(); }
     textInput.value = normalized(storedText(selectedLayer));
     refreshTextButtons();
     refreshTextTitle();
