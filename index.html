@@ -117,11 +117,35 @@
      widens out from behind it when opened; the header clips it at both
      edges, so it never escapes the strip. */
   #data-wrap {
-    position: relative;
     flex: 0 0 auto;
     display: flex;
     align-items: center;
     margin-left: auto; /* parks the button right beside the overlay dropdown */
+  }
+
+  /* the input's tuck anchor: 100% of THIS box is the button itself */
+  #data-btn-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  #labels-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-right: 10px;
+    font-size: .78rem;
+    color: #f1f5f9;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  #labels-toggle input {
+    margin: 0;
+    accent-color: #38bdf8;
+    cursor: pointer;
   }
 
   #data-btn {
@@ -268,6 +292,24 @@
   #nevermind-btn:not(:disabled):hover,
   #text-oops-btn:hover { background: #475569; }
 
+  /* "Min": permanent green button (unlike Update / Never mind it does not
+     track the dirty state) - always visible, always clickable */
+  #min-btn {
+    flex: 0 0 auto;
+    border: none;
+    border-radius: 999px;
+    padding: 5px 14px;
+    font: 600 .78rem system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    letter-spacing: .02em;
+    color: #fff;
+    background: #16a34a;
+    cursor: pointer;
+    transition: background-color .15s ease;
+  }
+
+  #min-btn:hover { background: #15803d; }
+  #min-btn:active { background: #166534; }
+
   #panel-status {
     flex: 1 1 auto;
     font-size: .8rem;
@@ -280,9 +322,10 @@
 
   /* collapsed = compact pill: only the bar, no editor/status internals;
      the Update button keeps its slot while dirty so it stays clickable,
-     otherwise it is removed from layout entirely */
+     otherwise it is removed from layout entirely; Min is expanded-only */
   #panel:not(.open) #panel-status { display: none; }
   #panel:not(.open) #panel-body { display: none; }
+  #panel:not(.open) #min-btn { display: none; }
   #panel:not(.open) #update-btn:not(.show),
   #panel:not(.open) #nevermind-btn:not(.show) { display: none; }
 
@@ -833,9 +876,14 @@
     <button type="button" id="reset-btn" title="Clear all locally stored data and the GeoJSON text">Reset</button>
     <h1 id="brand" title="Show menu">Geo<span>rrery</span></h1>
     <div id="data-wrap">
-      <button type="button" id="data-btn" title="Load GeoJSON from a URL">+ Data</button>
-      <input id="data-url" type="url" placeholder="Paste a GeoJSON / .map URL"
-             aria-label="GeoJSON URL" autocomplete="off" spellcheck="false">
+      <label id="labels-toggle" title="Show / hide the feature name labels">
+        <input type="checkbox" id="labels-check" checked> labels
+      </label>
+      <div id="data-btn-wrap">
+        <button type="button" id="data-btn" title="Load GeoJSON from a URL">+ Data</button>
+        <input id="data-url" type="url" placeholder="Paste a GeoJSON / .map URL"
+               aria-label="GeoJSON URL" autocomplete="off" spellcheck="false">
+      </div>
     </div>
     <div id="overlay-select-wrap">
       <select id="overlay-select" aria-label="Map overlay">
@@ -862,6 +910,7 @@
   <div id="panel">
     <div id="panel-bar" title="Toggle GeoJSON panel">
       <h2>GeoJSON</h2>
+      <button id="min-btn" type="button" title="Collapse the coordinate arrays onto single lines">Min</button>
       <button id="update-btn" type="button" title="Render edited GeoJSON onto the map">Update</button>
       <button id="nevermind-btn" type="button" title="Discard edits and restore the saved GeoJSON">Never mind</button>
       <div id="panel-status"></div>
@@ -959,6 +1008,7 @@
   const statusEl = document.getElementById("panel-status");
   const updateBtn = document.getElementById("update-btn");
   const neverMindBtn = document.getElementById("nevermind-btn");
+  const minBtn = document.getElementById("min-btn");
   const textarea = document.getElementById("geojson-input");
   const brand = document.getElementById("brand");
   const header = document.querySelector("header");
@@ -971,6 +1021,7 @@
   let statusTimer = 0;
   let viewSaveTimer = 0;
   let mapSyncTimer = 0;
+  let labelsEnabled = true;   // header checkbox: permanent name labels on/off
 
   function setStatus(text, isError) {
     statusEl.textContent = text;
@@ -1006,7 +1057,7 @@
   }
 
   function bindNameLabel(feature, layer) {
-    if (!hasName(feature) || !layer.bindTooltip) { return; }
+    if (!labelsEnabled || !hasName(feature) || !layer.bindTooltip) { return; }
     layer.bindTooltip(escapeHtml(String(feature.properties.name)), nameLabelOptions(layer));
   }
 
@@ -1275,6 +1326,29 @@
     dataUrlInput.classList.remove("error"); // typing clears the failure state
     dataUrlInput.title = "";
   });
+
+  // ---- "labels" checkbox: permanent name labels on/off ----
+  // Toggling off unbinds every tooltip on the working layers; toggling on
+  // re-binds (and refreshes) one per feature that has a name. Playback
+  // copies never carry labels (see layerOptions), so the working layer set
+  // is the whole story. Freshly drawn / loaded features respect the flag
+  // through bindNameLabel.
+  const labelsCheck = document.getElementById("labels-check");
+
+  function applyLabels() {
+    labelsEnabled = labelsCheck.checked;
+    if (!dataLayer) { return; }
+    dataLayer.getLayers().forEach(layer => {
+      if (labelsEnabled) {
+        syncNameLabel(layer);
+      } else if (layer.getTooltip) {
+        const tt = layer.getTooltip();
+        if (tt) { layer.closeTooltip(); layer.unbindTooltip(); }
+      }
+    });
+  }
+
+  labelsCheck.addEventListener("change", applyLabels);
 
   function parseEditor() {
     const text = editorValue();
@@ -1970,10 +2044,115 @@
     (cm || textarea).focus();
   });
 
-  // The panel is anchored bottom-left: a small pill when collapsed, full
-  // width when open. Collapsed size is fit-content, which CSS can't animate,
-  // so expand/collapse pin an explicit start width, then release it to let
-  // the transition run to the class-driven target.
+  // ---- "Min": collapse coordinate arrays onto one line ----
+  // A text-level minifier that touches ONLY the numeric payload arrays
+  // ("coordinates", "bbox", "center" - the "coordinates"-style fields that
+  // hold all the numbers). Everything else - indentation, whitespace,
+  // string content - is left byte-for-byte intact. The result is the same
+  // data, so a clean text stays clean (lastRendered follows the change).
+  const MINIFY_KEYS = new Set(["coordinates", "bbox", "center"]);
+
+  function tokenizeJson(text) {
+    const tokens = [];
+    let i = 0;
+    const n = text.length;
+    while (i < n) {
+      const ch = text[i];
+      if (ch === "\"") {
+        let j = i + 1;
+        while (j < n && text[j] !== "\"") { if (text[j] === "\\") { j++; } j++; }
+        j++;
+        tokens.push({ type: "string", raw: text.slice(i, j), value: JSON.parse(text.slice(i, j)), start: i, end: j });
+        i = j;
+      } else if (ch === "-" || (ch >= "0" && ch <= "9")) {
+        let j = i + 1;
+        while (j < n && /[0-9eE+\-.]/.test(text[j])) { j++; }
+        tokens.push({ type: "number", raw: text.slice(i, j), start: i, end: j });
+        i = j;
+      } else if ("{}[],:".indexOf(ch) >= 0) {
+        tokens.push({ type: ch, raw: ch, start: i, end: i + 1 });
+        i++;
+      } else if (/\s/.test(ch)) {
+        let j = i + 1;
+        while (j < n && /\s/.test(text[j])) { j++; }
+        tokens.push({ type: "ws", raw: text.slice(i, j), start: i, end: j });
+        i = j;
+      } else {
+        const m = /^(true|false|null)/.exec(text.slice(i));
+        if (m) {
+          tokens.push({ type: "literal", raw: m[0], start: i, end: i + m[0].length });
+          i += m[0].length;
+        } else {
+          tokens.push({ type: "raw", raw: ch, start: i, end: i + 1 });
+          i++;
+        }
+      }
+    }
+    return tokens;
+  }
+
+  // Returns { text, count } - text with numeric arrays under the MINIFY_KEYS
+  // properties rewritten as one whitespace-free line; count is how many
+  // arrays were shrunk. text is unchanged (count 0) when there is nothing.
+  function minifyCoordinates(text) {
+    const tokens = tokenizeJson(text);
+    const spans = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t.type !== "string" || !MINIFY_KEYS.has(t.value)) { continue; }
+      let k = i + 1;
+      while (tokens[k] && tokens[k].type === "ws") { k++; }
+      if (!tokens[k] || tokens[k].type !== ":") { continue; }
+      k++;
+      while (tokens[k] && tokens[k].type === "ws") { k++; }
+      if (!tokens[k] || tokens[k].type !== "[") { continue; }
+      let depth = 0;
+      let end = k;
+      for (; end < tokens.length; end++) {
+        if (tokens[end].type === "[") { depth++; }
+        else if (tokens[end].type === "]") { depth--; if (depth === 0) { break; } }
+      }
+      if (depth !== 0) { continue; }               // unterminated array - leave it
+      let pure = true;
+      for (let p = k + 1; p < end; p++) {
+        const tt = tokens[p].type;
+        if (tt !== "number" && tt !== "[" && tt !== "]" && tt !== "," && tt !== "ws") {
+          pure = false;
+          break;
+        }
+      }
+      if (!pure) { continue; }                     // non-numeric content - leave it
+      const compact = tokens.slice(k, end + 1)
+        .filter(tok => tok.type !== "ws")
+        .map(tok => tok.raw)
+        .join("");
+      spans.push({ start: tokens[k].start, end: tokens[end].end, compact });
+    }
+    if (!spans.length) { return { text, count: 0 }; }
+    let out = text;
+    for (let s = spans.length - 1; s >= 0; s--) {
+      const sp = spans[s];
+      out = out.slice(0, sp.start) + sp.compact + out.slice(sp.end);
+    }
+    return { text: out, count: spans.length };
+  }
+
+  minBtn.addEventListener("click", e => {
+    e.stopPropagation(); // don't toggle the panel
+    const text = editorValue();
+    const { text: minified, count } = minifyCoordinates(text);
+    if (minified === text) {
+      setStatus("Nothing to minify");
+      return;
+    }
+    // A real change: the minified text becomes an unsaved edit - lastRendered
+    // is untouched, so the status turns dirty and Update / Never mind appear.
+    // The map still shows the same data; Update commits (and saves) the text,
+    // Never mind discards it.
+    setEditorText(minified);
+    refreshStatus();
+    setStatus(`Minified ${count} array${count === 1 ? "" : "s"} - unsaved`);
+  });
   let widthAnimHandler = null;
 
   function stopWidthAnim() {
