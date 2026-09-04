@@ -254,6 +254,7 @@
     color: #1e293b;
   }
 
+  #zoom-btn,
   #update-btn,
   #nevermind-btn,
   #text-update-btn,
@@ -273,9 +274,13 @@
     transition: opacity .25s ease, transform .25s ease, background-color .15s ease;
   }
 
+  #zoom-btn { background: #16a34a; }
+  #zoom-btn:not(:disabled):hover { background: #15803d; }
+
   #nevermind-btn,
   #text-oops-btn { background: #64748b; }
 
+  #zoom-btn.show,
   #update-btn.show,
   #nevermind-btn.show,
   #text-update-btn.show,
@@ -285,7 +290,8 @@
     pointer-events: auto;
   }
 
-  #update-btn:disabled {
+  #update-btn:disabled,
+  #zoom-btn:disabled {
     background: #94a3b8;
     cursor: not-allowed;
   }
@@ -310,6 +316,7 @@
      otherwise it is removed from layout entirely */
   #panel:not(.open) #panel-status { display: none; }
   #panel:not(.open) #panel-body { display: none; }
+  #panel:not(.open) #zoom-btn:not(.show),
   #panel:not(.open) #update-btn:not(.show),
   #panel:not(.open) #nevermind-btn:not(.show) { display: none; }
 
@@ -894,6 +901,8 @@
   <div id="panel">
     <div id="panel-bar" title="Toggle GeoJSON panel">
       <h2>GeoJSON</h2>
+      <button id="zoom-btn" type="button"
+              title="Center the map on the feature under the caret (or the selection)">Zoom</button>
       <button id="update-btn" type="button" title="Render edited GeoJSON onto the map">Update</button>
       <button id="nevermind-btn" type="button" title="Discard edits and restore the saved GeoJSON">Never mind</button>
       <div id="panel-status"></div>
@@ -2055,6 +2064,177 @@
     refreshStatus();
     (cm || textarea).focus();
   });
+
+  // ---- Zoom to the feature under the caret ----
+  // A green Zoom button that appears in the panel bar while the editor is
+  // focused (left of Update / Never mind, which only show while dirty). It
+  // reads the GeoJSON TEXT, not the drawn layers, so it also works while the
+  // text is dirty: the caret's feature slice parses independently of the
+  // rest of the document, and a selection resolves to every feature it
+  // touches. A single Point keeps the current zoom and just centers the
+  // point; anything else (or several features) fits the map to the union of
+  // their coordinates. The view save timer handles persisting the result.
+  const zoomBtn = document.getElementById("zoom-btn");
+
+  // Byte spans of the top-level features in *text*: every object inside a
+  // top-level "features" array, or the whole document for a bare Feature.
+  // A string-aware depth scan that tolerates half-typed JSON.
+  function scanFeatureSpans(text) {
+    const spans = [];
+    const n = text.length;
+    let depth = 0, i = 0;
+    let expectKey = true;
+    let key = null;
+    let inFeatures = false;
+    let itemStart = -1;
+    let topStart = -1;
+    while (i < n) {
+      const ch = text[i];
+      if (ch === '"') {
+        let j = i + 1;
+        while (j < n && text[j] !== '"') { if (text[j] === "\\") { j++; } j++; }
+        const closed = j < n;
+        if (depth === 1 && expectKey) { key = closed ? text.slice(i + 1, j) : text.slice(i + 1); }
+        i = closed ? j + 1 : j;
+      } else if (ch === "{" || ch === "[") {
+        if (depth === 0 && ch === "{" && topStart === -1) { topStart = i; }
+        if (ch === "{" && inFeatures && depth === 2 && itemStart === -1) { itemStart = i; }
+        if (ch === "[" && depth === 1 && key === "features") { inFeatures = true; }
+        depth++;
+        expectKey = ch === "{";
+        i++;
+      } else if (ch === "}" || ch === "]") {
+        depth--;
+        if (ch === "}" && inFeatures && itemStart !== -1 && depth === 2) {
+          spans.push({ start: itemStart, end: i + 1 });
+          itemStart = -1;
+        }
+        if (ch === "]" && depth === 1) { inFeatures = false; }
+        expectKey = ch === "}";
+        i++;
+      } else if (ch === ":") {
+        expectKey = false;
+        i++;
+      } else if (ch === ",") {
+        expectKey = depth === 1;
+        i++;
+      } else {
+        i++;
+      }
+    }
+    if (!spans.length && topStart !== -1) { spans.push({ start: topStart, end: n }); }
+    return spans;
+  }
+
+  function flattenPositions(coords, out) {
+    if (Array.isArray(coords)) {
+      if (coords.length >= 2 && typeof coords[0] === "number" && typeof coords[1] === "number") {
+        out.push([coords[1], coords[0]]); // GeoJSON lon/lat -> Leaflet lat/lng
+      } else {
+        for (const c of coords) { flattenPositions(c, out); }
+      }
+    }
+    return out;
+  }
+
+  // Features whose span intersects [from, to); each carries the flattened
+  // lat/lng positions and whether the geometry is a bare Point. A feature
+  // slice that does not parse on its own (mid-edit) is skipped.
+  function featuresForRange(from, to) {
+    const text = editorValue();
+    const out = [];
+    for (const s of scanFeatureSpans(text)) {
+      if (!(from < s.end && to > s.start)) { continue; }
+      let feature = null;
+      try { feature = JSON.parse(text.slice(s.start, s.end)); } catch { continue; }
+      const g = feature && feature.type === "Feature" ? feature.geometry : feature;
+      if (!g || typeof g !== "object" || !g.type) { continue; }
+      const positions = [];
+      if (g.type === "GeometryCollection") {
+        for (const sub of g.geometries || []) { flattenPositions(sub.coordinates, positions); }
+      } else {
+        flattenPositions(g.coordinates, positions);
+      }
+      if (positions.length) { out.push({ positions, isPoint: g.type === "Point" }); }
+    }
+    return out;
+  }
+
+  function computeZoomTargets() {
+    const from = cm ? cm.indexFromPos(cm.getCursor("from")) : textarea.selectionStart;
+    const to = cm ? cm.indexFromPos(cm.getCursor("to")) : textarea.selectionEnd;
+    let features = to > from
+      ? featuresForRange(from, to)        // selection wins over the caret
+      : featuresForRange(from, from + 1); // caret inside a feature
+    if (!features.length) { features = featuresForRange(0, editorValue().length); } // fallback: everything
+    return features;
+  }
+
+  // How far (px) a single zoomed feature sits above the viewport center.
+  // The open GeoJSON panel covers the bottom half of the map, so an exactly
+  // centered label would land on/behind its top edge; the slight southward
+  // pan leaves the feature's name label just over the panel instead. Zoom
+  // frames that must show everything (multi-feature selection, fallback)
+  // stay unshifted so nothing gets clipped.
+  const ZOOM_LABEL_CLEARANCE = 32;
+
+  function applyZoom() {
+    const features = computeZoomTargets();
+    if (!features.length) { return; }
+    const single = features.length === 1;
+    const clearance = panel.classList.contains("open") && single ? ZOOM_LABEL_CLEARANCE : 0;
+    if (single && features[0].isPoint) {
+      const p = features[0].positions[0];
+      const z = map.getZoom();
+      const target = clearance
+        ? map.unproject(map.project([p[0], p[1]], z).add([0, clearance]), z)
+        : [p[0], p[1]];
+      map.setView(target, z, { animate: true });
+    } else {
+      const bounds = L.latLngBounds([]);
+      for (const f of features) { for (const p of f.positions) { bounds.extend([p[0], p[1]]); } }
+      const opts = { maxZoom: 16, animate: true };
+      if (clearance) {
+        // Asymmetric padding shifts the fitted frame's center south of the
+        // feature (Leaflet's center formula is (paddingTL - paddingBR) / 2),
+        // so the label lands above the panel without clipping the shape.
+        opts.paddingTopLeft = [24, 24];
+        opts.paddingBottomRight = [24, 24 + clearance * 2];
+      } else {
+        opts.padding = [24, 24];
+      }
+      map.fitBounds(bounds, opts);
+    }
+  }
+
+  function refreshZoomBtn() {
+    const focused = cm ? cm.hasFocus() : document.activeElement === textarea;
+    zoomBtn.classList.toggle("show", focused);
+    if (focused) { zoomBtn.disabled = !computeZoomTargets().length; }
+  }
+
+  zoomBtn.addEventListener("click", e => {
+    e.stopPropagation(); // don't toggle the panel
+    applyZoom();
+  });
+
+  // Clicking the button must not steal focus from the editor: mousedown would
+  // blur it, hiding the button (and its pointer-events) before mouseup, so
+  // the click would land on the panel bar and collapse the panel instead.
+  zoomBtn.addEventListener("mousedown", e => e.preventDefault());
+
+  if (cm) {
+    cm.on("focus", refreshZoomBtn);
+    cm.on("blur", refreshZoomBtn);
+    cm.on("cursorActivity", refreshZoomBtn);
+    cm.on("change", refreshZoomBtn);
+  } else {
+    textarea.addEventListener("focus", refreshZoomBtn);
+    textarea.addEventListener("blur", refreshZoomBtn);
+    textarea.addEventListener("input", refreshZoomBtn);
+    textarea.addEventListener("keyup", refreshZoomBtn);
+    textarea.addEventListener("mouseup", refreshZoomBtn);
+  }
 
   // ---- coordinate minifier (runs on every serialized text) ----
   // A text-level minifier that touches ONLY the numeric payload arrays
