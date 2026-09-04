@@ -1075,11 +1075,13 @@
   }
 
   // Shared L.GeoJSON / L.timeline options; wireGeoman adds the map-edit
-  // sync plus the permanent name labels (working layers only).
+  // sync plus the permanent name labels (working layers only). Points use
+  // the standard Leaflet marker (like Geoman's own) - not circleMarkers -
+  // so every point looks the same no matter how it got onto the map.
   function layerOptions(color, wireGeoman) {
     return {
       style: () => ({ color, weight: 2, fillOpacity: 0.25 }),
-      pointToLayer: (_feature, latlng) => L.circleMarker(latlng, { radius: 6, color, weight: 2, fillOpacity: 0.5 }),
+      pointToLayer: (_feature, latlng) => L.marker(latlng),
       onEachFeature: (feature, layer) => {
         if (wireGeoman) {
           wireGeomanSync(layer);
