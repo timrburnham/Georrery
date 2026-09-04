@@ -16,6 +16,9 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/addon/lint/lint.min.css"
       integrity="sha512-bfa1NKQKC/ytQSvZAqmdhn61tSpSyVQ1nkp41fkhDsPeG3jTvd36smZdLYv4Zs7gXHjNwTk0yDvS1nMfVzwwlw=="
       crossorigin="anonymous">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/addon/dialog/dialog.css"
+      integrity="sha512-5/XbSvrM+KAMENYsNpNkIyPT/PF2BKR5eAPfBOTxRKlE3GRsL9ogVI31OK2ndVcBJ7KhVAOZahcc7RdpaX8+5A=="
+      crossorigin="anonymous">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -950,6 +953,15 @@
         crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/addon/edit/matchbrackets.min.js"
         integrity="sha512-ynfHqOx3h/V0CDEdHKHdS4C0Kp5tcpILVbUOqNczDbRDiKqrMx3mONwyFHcMmOs43MMiGfD9gDjbvnQ5fOZxvw=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/addon/search/searchcursor.min.js"
+        integrity="sha512-G7SSg65I6Nsf7ZK9jpLQegVHacet1pZqR8Ltn1jlU1kInGW2Ow/ygCq3thQheGvQ8kgv7tZ4AkOCHL4XnlFxmA=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/addon/search/search.min.js"
+        integrity="sha512-NirDEEg/Cf96QqxofyyEYi/hjpc2mK4Jm0CfBanm+HL3iGfBTjFHQuZNsUU4+2TvBGLCRA9xX/J2PQVkJ4sUVA=="
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.21/addon/dialog/dialog.min.js"
+        integrity="sha512-NaLjgE9T4PFC1ubPctIG7YcX0WkjLJR9AK2zBaHp3T7vuHit2ROUD2F3rmgE6SbhfvwYHRzxEw1h7B8rFQld0A=="
         crossorigin="anonymous"></script>
 <!-- Markdown preview for the feature Text panel: marked renders to HTML and
      DOMPurify sanitizes it (marked passes raw HTML through by design - its
@@ -1988,7 +2000,16 @@
       lint: true,
       indentUnit: 2,
       tabSize: 2,
-      gutters: ["CodeMirror-lint-markers", "CodeMirror-linenumbers"]
+      gutters: ["CodeMirror-lint-markers", "CodeMirror-linenumbers"],
+      extraKeys: {
+        "Ctrl-F": "findPersistent",
+        "Cmd-F": "findPersistent",
+        "Ctrl-G": "findNext",
+        "Cmd-G": "findNext",
+        "Shift-Ctrl-G": "findPrev",
+        "Shift-Cmd-G": "findPrev",
+        "Esc": "clearSearch"
+      }
     });
   } else {
     setStatus("CodeMirror CDN failed to load - plain text mode", true);
