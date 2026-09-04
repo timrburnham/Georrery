@@ -89,7 +89,6 @@
   header h1 span { color: #38bdf8; }
 
   #overlay-select-wrap {
-    margin-left: auto;
     display: flex;
     align-items: center;
   }
@@ -112,6 +111,84 @@
     background: #1e293b;
     color: #f1f5f9;
   }
+
+  /* ---- "+ Data" URL loader ---- */
+  /* The input parks tucked under the button's left edge (6px overlap) and
+     widens out from behind it when opened; the header clips it at both
+     edges, so it never escapes the strip. */
+  #data-wrap {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    margin-left: auto; /* parks the button right beside the overlay dropdown */
+  }
+
+  /* the input's tuck anchor: 100% of THIS box is the button itself */
+  #data-btn-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  #labels-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-right: 10px;
+    font-size: .78rem;
+    color: #f1f5f9;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  #labels-toggle input {
+    margin: 0;
+    accent-color: #38bdf8;
+    cursor: pointer;
+  }
+
+  #data-btn {
+    position: relative; /* paints above the tucked-in input */
+    border: 1px solid #475569;
+    background: #334155;
+    color: #f1f5f9;
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: .8rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  #data-btn:hover { border-color: #38bdf8; color: #fff; }
+  #data-btn:disabled { opacity: .6; cursor: wait; }
+
+  #data-url {
+    position: absolute;
+    top: 50%;
+    right: calc(100% - 6px);
+    transform: translateY(-50%);
+    width: 0;
+    border: 1px solid #334155;
+    background: #0f172a;
+    color: #f1f5f9;
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: .85rem;
+    outline: none;
+    opacity: 0;
+    pointer-events: none;
+    transition: width .3s ease, opacity .2s ease, border-color .15s ease;
+  }
+
+  #data-url.open {
+    width: min(340px, 40vw);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  #data-url:focus { border-color: #38bdf8; }
+  #data-url.error { border-color: #dc2626; }
 
   #map-wrap {
     flex: 1 1 auto;
@@ -541,13 +618,6 @@
     color: #64748b;
   }
 
-  .feat-popup .popup-time {
-    display: block;
-    margin-top: 2px;
-    color: #64748b;
-    font-size: .85em;
-  }
-
   /* ---- permanent feature name labels (Leaflet tooltips) ---- */
   .name-label {
     max-width: 240px;
@@ -786,6 +856,16 @@
   <div id="header-strip">
     <button type="button" id="reset-btn" title="Clear all locally stored data and the GeoJSON text">Reset</button>
     <h1 id="brand" title="Show menu">Geo<span>rrery</span></h1>
+    <div id="data-wrap">
+      <label id="labels-toggle" title="Show / hide the feature name labels">
+        <input type="checkbox" id="labels-check" checked> labels
+      </label>
+      <div id="data-btn-wrap">
+        <button type="button" id="data-btn" title="Load GeoJSON from a URL">+ Data</button>
+        <input id="data-url" type="url" placeholder="Paste a GeoJSON / .map URL"
+               aria-label="GeoJSON URL" autocomplete="off" spellcheck="false">
+      </div>
+    </div>
     <div id="overlay-select-wrap">
       <select id="overlay-select" aria-label="Map overlay">
         <option value="">No Overlay</option>
@@ -892,6 +972,11 @@
 
   const EMPTY_GEOJSON_TEXT = JSON.stringify({ type: "FeatureCollection", features: [] }, null, 2);
 
+  // Keys whose numeric arrays are collapsed to single lines by the minifier
+  // (declared up here: minifyCoordinates runs during init, so the const must
+  // not sit in the temporal dead zone below).
+  const MINIFY_KEYS = new Set(["coordinates", "bbox", "center"]);
+
   const map = L.map("map", { worldCopyJump: true }).setView([20, 0], 2);
 
   L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
@@ -920,35 +1005,26 @@
   let statusTimer = 0;
   let viewSaveTimer = 0;
   let mapSyncTimer = 0;
+  let labelsEnabled = true;   // header checkbox: permanent name labels on/off
 
   function setStatus(text, isError) {
     statusEl.textContent = text;
-    statusEl.classList.toggle("error", isError);
+    // toggle(token, undefined) FLIPS in Firefox - an omitted error flag must
+    // clear the class, never toggle it
+    statusEl.classList.toggle("error", Boolean(isError));
   }
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  function popupHtml(feature) {
-    const p = (feature && feature.properties) || {};
-    const bits = [];
-    if (p.datetime) { bits.push(String(p.datetime)); }
-    if (p.start || p.end) { bits.push(`${String(p.start || "...")} - ${String(p.end || "...")}`); }
-    let html = "";
-    if (p.name) { html += `<strong>${escapeHtml(String(p.name))}</strong>`; }
-    const t = bits.join(" | ");
-    if (t) { html += `${html ? "<br>" : ""}<span class="popup-time">${escapeHtml(t)}</span>`; }
-    return html;
-  }
-
   // ---- permanent "name" labels on the shapes ----
   // Rendered beside points and centered on lines, polygons, and multi-part
   // features. Tooltips are pointer-events:none, so clicks fall through to
   // the shape (details card) underneath. Tooltip content goes through
-  // innerHTML, so names are HTML-escaped like popups. Labels live on the
-  // working layers only - playback copies keep their hover popups (no
-  // duplicate labels on the map).
+  // innerHTML, so names are HTML-escaped. Labels live on the working layers
+  // only - during playback a copy sits on top of its hidden working original
+  // and would duplicate the label.
   function hasName(feature) {
     const n = feature && feature.properties && feature.properties.name;
     return n != null && String(n).trim() !== "";
@@ -965,7 +1041,7 @@
   }
 
   function bindNameLabel(feature, layer) {
-    if (!hasName(feature) || !layer.bindTooltip) { return; }
+    if (!labelsEnabled || !hasName(feature) || !layer.bindTooltip) { return; }
     layer.bindTooltip(escapeHtml(String(feature.properties.name)), nameLabelOptions(layer));
   }
 
@@ -983,18 +1059,23 @@
   }
 
   // Shared L.GeoJSON / L.timeline options; wireGeoman adds the map-edit
-  // sync plus the permanent name labels (working layers only).
+  // sync plus the permanent name labels (working layers only). Points use
+  // the standard Leaflet marker (like Geoman's own) - not circleMarkers -
+  // so every point looks the same no matter how it got onto the map.
   function layerOptions(color, wireGeoman) {
     return {
       style: () => ({ color, weight: 2, fillOpacity: 0.25 }),
-      pointToLayer: (_feature, latlng) => L.circleMarker(latlng, { radius: 6, color, weight: 2, fillOpacity: 0.5 }),
+      pointToLayer: (_feature, latlng) => L.marker(latlng),
       onEachFeature: (feature, layer) => {
         if (wireGeoman) {
           wireGeomanSync(layer);
           bindNameLabel(feature, layer);
         } else {
-          const html = popupHtml(feature); // read-only summary on playback copies
-          if (html) { layer.bindPopup(html, { className: "feat-popup" }); }
+          // Playback copies open the same Facts card as working shapes; the
+          // feature object is shared with the working layer, so card edits
+          // land on the real data and ride the usual map -> text sync.
+          layer.__playback = true;
+          layer.on("click", e => selectFeature(layer, e.latlng));
         }
       }
     };
@@ -1092,6 +1173,168 @@
   if (!OVERLAYS[savedOverlay]) { savedOverlay = ""; }
   overlaySelect.value = savedOverlay;
   if (savedOverlay) { setOverlay(savedOverlay); }
+
+  // ---- "+ Data": load GeoJSON from a URL into the current context ----
+  // The input parks behind the button and widens out on click; the same
+  // button (or Enter) submits, Escape closes. The fetched features are
+  // appended to the editor's FeatureCollection, rendered, and saved - the
+  // same context the editor and Geoman draw from. MediaWiki "Data:" pages
+  // render HTML around the JSON, so their URLs are pulled through the API
+  // (cross-origin via origin=*); raw .geojson / .map URLs fetch directly.
+  const dataBtn = document.getElementById("data-btn");
+  const dataUrlInput = document.getElementById("data-url");
+
+  function openDataBox() {
+    dataUrlInput.classList.add("open");
+    dataUrlInput.classList.remove("error");
+    dataUrlInput.title = "";
+    dataUrlInput.focus();
+    dataUrlInput.select(); // a second open types over the previous URL
+  }
+
+  function closeDataBox() {
+    dataUrlInput.classList.remove("open");
+    dataUrlInput.blur();
+  }
+
+  // Accepts a bare FeatureCollection, a single Feature, a GeometryCollection,
+  // an array of features, or a WikiMap .map file (the GeoJSON hides under a
+  // "data" property, feature names live in "title" -> mapped to "name").
+  function normalizeFeatures(data) {
+    if (data && typeof data === "object" && !Array.isArray(data) &&
+        data.data && !data.type) {
+      data = data.data;
+    }
+    let features = null;
+    if (Array.isArray(data)) {
+      features = data;
+    } else if (data && data.type === "FeatureCollection" && Array.isArray(data.features)) {
+      features = data.features;
+    } else if (data && data.type === "Feature") {
+      features = [data];
+    } else if (data && data.type === "GeometryCollection" && Array.isArray(data.geometries)) {
+      features = data.geometries.map(g => ({ type: "Feature", properties: {}, geometry: g }));
+    }
+    if (!features) { return null; }
+    return features.map(f => {
+      if (!f || f.type !== "Feature") { return null; }
+      const props = f.properties || (f.properties = {});
+      if (props.name == null && props.title != null) { props.name = props.title; }
+      return f;
+    }).filter(Boolean);
+  }
+
+  async function loadDataFromUrl(rawUrl) {
+    let url = String(rawUrl).trim();
+    if (!url) { return []; }
+    const mw = /^https?:\/\/commons\.wikimedia\.org\/wiki\/(Data:[^?#\s]+)/i.exec(url);
+    let viaApi = false;
+    if (mw) {
+      viaApi = true;
+      url = "https://commons.wikimedia.org/w/api.php?action=query&format=json" +
+        "&formatversion=2&origin=*&prop=revisions&rvprop=content&rvslots=main" +
+        "&titles=" + encodeURIComponent(mw[1]);
+    }
+    const res = await fetch(url, { mode: "cors" });
+    if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
+    let text = await res.text();
+    if (viaApi) {
+      const j = JSON.parse(text);
+      const page = j.query && j.query.pages && j.query.pages[0];
+      if (!page || page.missing) { throw new Error("Data page not found"); }
+      const content = page.revisions && page.revisions[0] &&
+        page.revisions[0].slots.main.content;
+      if (!content) { throw new Error("Data page has no content"); }
+      text = content;
+    }
+    let data;
+    try { data = JSON.parse(text); }
+    catch {
+      // the MediaWiki API sometimes percent-encodes page content
+      try { data = JSON.parse(decodeURIComponent(text)); }
+      catch { throw new Error("Response is not valid JSON"); }
+    }
+    const features = normalizeFeatures(data);
+    if (!features) { throw new Error("No GeoJSON features in the response"); }
+    return features;
+  }
+
+  function submitDataUrl() {
+    const url = dataUrlInput.value.trim();
+    if (!url) { closeDataBox(); return; }
+    const host = (() => { try { return new URL(url).hostname; } catch { return "URL"; } })();
+    dataBtn.disabled = true;
+    loadDataFromUrl(url)
+      .then(features => {
+        // merge into the GeoJSON context: editor text, map, storage
+        const r = parseEditor();
+        let base = r.ok ? r.data : (dataLayer ? dataLayer.toGeoJSON() : null);
+        if (!base || base.type !== "FeatureCollection") {
+          base = { type: "FeatureCollection", features: [] };
+        }
+        const merged = { type: "FeatureCollection", features: base.features.slice().concat(features) };
+        const text = prettyMinify(merged);
+        setEditorText(text);
+        renderData(merged);
+        lastRendered = text;
+        saveNow();
+        refreshStatus();
+        setStatus(`Loaded ${features.length} feature${features.length === 1 ? "" : "s"} from ${host}`);
+        // bring the freshly loaded data into view (the merged set may be
+        // scattered across the globe; the new features define the frame)
+        const bounds = dataLayer.getBounds();
+        if (bounds.isValid()) { map.fitBounds(bounds, { padding: [24, 24], maxZoom: 13 }); }
+        dataUrlInput.value = "";
+        closeDataBox();
+      })
+      .catch(err => {
+        dataUrlInput.classList.add("error");
+        dataUrlInput.title = err.message || String(err);
+        setStatus(`Load failed: ${err.message || err}`, true);
+      })
+      .finally(() => { dataBtn.disabled = false; });
+  }
+
+  dataBtn.addEventListener("click", () => {
+    if (dataUrlInput.classList.contains("open")) {
+      if (dataUrlInput.value.trim()) { submitDataUrl(); } else { closeDataBox(); }
+    } else {
+      openDataBox();
+    }
+  });
+
+  dataUrlInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); submitDataUrl(); }
+    else if (e.key === "Escape") { e.preventDefault(); closeDataBox(); }
+  });
+
+  dataUrlInput.addEventListener("input", () => {
+    dataUrlInput.classList.remove("error"); // typing clears the failure state
+    dataUrlInput.title = "";
+  });
+
+  // ---- "labels" checkbox: permanent name labels on/off ----
+  // Toggling off unbinds every tooltip on the working layers; toggling on
+  // re-binds (and refreshes) one per feature that has a name. Playback
+  // copies never carry labels (see layerOptions), so the working layer set
+  // is the whole story. Freshly drawn / loaded features respect the flag
+  // through bindNameLabel.
+  const labelsCheck = document.getElementById("labels-check");
+
+  function applyLabels() {
+    labelsEnabled = labelsCheck.checked;
+    if (!dataLayer) { return; }
+    dataLayer.getLayers().forEach(layer => {
+      if (labelsEnabled) {
+        syncNameLabel(layer);
+      } else if (layer.getTooltip) {
+        const tt = layer.getTooltip();
+        if (tt) { layer.closeTooltip(); layer.unbindTooltip(); }
+      }
+    });
+  }
+
+  labelsCheck.addEventListener("change", applyLabels);
 
   function parseEditor() {
     const text = editorValue();
@@ -1406,7 +1649,18 @@
   });
   detailsPopup.on("remove", () => { // fires on every close path (button, Esc, ...)
     if (selectedLayer) {
-      if (selectedLayer.setStyle) { selectedLayer.setStyle({ color: "#0284c7", weight: 2 }); }
+      if (selectedLayer.setStyle) {
+        let color = "#0284c7";
+        if (selectedLayer.__playback) {
+          // restore the playback look: static violet, or the redshift hue a
+          // range feature wears at the current playhead
+          const f = selectedLayer.feature;
+          color = f && f.__range && f.__interval && tlLayer
+            ? redshiftColor(f.__interval.min, f.__interval.max, tlLayer.time)
+            : "#7c3aed";
+        }
+        selectedLayer.setStyle({ color, weight: 2 });
+      }
       selectedLayer = null;
     }
   });
@@ -1490,6 +1744,13 @@
     }
   });
 
+  // The working (dataLayer) layer sharing a playback copy's feature object.
+  function workingLayerFor(playbackLayer) {
+    let found = null;
+    dataLayer.getLayers().forEach(l => { if (l.feature === playbackLayer.feature) { found = l; } });
+    return found;
+  }
+
   function selectFeature(layer, latlng) {
     if (selectedLayer === layer) { return; } // keep card and input focus as-is
     closeDetails();
@@ -1522,6 +1783,12 @@
       if (input.value) { props[prop] = input.value; } else { delete props[prop]; }
       if (prop === "name") {
         syncNameLabel(selectedLayer); // keep the on-shape label in step
+        if (selectedLayer.__playback) {
+          // mirror onto the working copy: the playback layer (and its label)
+          // is discarded when playback ends, the working label persists
+          const wl = workingLayerFor(selectedLayer);
+          if (wl) { syncNameLabel(wl); }
+        }
         refreshTextTitle(); // and the text panel header, if it is open
       }
       const invalid = prop !== "name" && input.value !== "" && !parseEdtf(input.value);
@@ -1603,6 +1870,9 @@
   }
 
   function openTextPanel() {
+    // the two side panels fight for the same map area; opening Text
+    // collapses the GeoJSON panel (without touching its edit state)
+    if (panel.classList.contains("open")) { collapsePanel(); }
     textInput.value = normalized(storedText(selectedLayer));
     refreshTextButtons();
     refreshTextTitle();
@@ -1701,8 +1971,12 @@
   });
 
   // Load persisted GeoJSON (or the empty collection) before CM takes over.
+  // Stored text is normalized the same way as freshly serialized text:
+  // indented, then the coordinate arrays collapsed by the minifier.
   const savedText = loadSavedText();
-  textarea.value = savedText ? savedText : EMPTY_GEOJSON_TEXT;
+  textarea.value = savedText
+    ? minifyCoordinates(savedText).text
+    : EMPTY_GEOJSON_TEXT;
 
   // CodeMirror, with a plain-textarea fallback if the CDN library fails to load.
   if (typeof CodeMirror !== "undefined") {
@@ -1747,7 +2021,8 @@
   neverMindBtn.addEventListener("click", e => {
     e.stopPropagation(); // don't toggle the panel
     const saved = loadSavedText();
-    const text = saved ? saved : EMPTY_GEOJSON_TEXT;
+    // normalize the restored text the same way as every other load
+    const text = minifyCoordinates(saved ? saved : EMPTY_GEOJSON_TEXT).text;
     setEditorText(text);
     if (text !== lastRendered) {
       // storage and the editor disagree with what is drawn (e.g. right after
@@ -1760,10 +2035,106 @@
     (cm || textarea).focus();
   });
 
-  // The panel is anchored bottom-left: a small pill when collapsed, full
-  // width when open. Collapsed size is fit-content, which CSS can't animate,
-  // so expand/collapse pin an explicit start width, then release it to let
-  // the transition run to the class-driven target.
+  // ---- coordinate minifier (runs on every serialized text) ----
+  // A text-level minifier that touches ONLY the numeric payload arrays
+  // ("coordinates", "bbox", "center" - the "coordinates"-style fields that
+  // hold all the numbers). Everything else - indentation, whitespace,
+  // string content - is left byte-for-byte intact. Every load path pipes
+  // the JSON.stringify output through this (see prettyMinify), so the
+  // editor text always shows single-line coordinate arrays.
+
+  function tokenizeJson(text) {
+    const tokens = [];
+    let i = 0;
+    const n = text.length;
+    while (i < n) {
+      const ch = text[i];
+      if (ch === "\"") {
+        let j = i + 1;
+        while (j < n && text[j] !== "\"") { if (text[j] === "\\") { j++; } j++; }
+        j++;
+        tokens.push({ type: "string", raw: text.slice(i, j), value: JSON.parse(text.slice(i, j)), start: i, end: j });
+        i = j;
+      } else if (ch === "-" || (ch >= "0" && ch <= "9")) {
+        let j = i + 1;
+        while (j < n && /[0-9eE+\-.]/.test(text[j])) { j++; }
+        tokens.push({ type: "number", raw: text.slice(i, j), start: i, end: j });
+        i = j;
+      } else if ("{}[],:".indexOf(ch) >= 0) {
+        tokens.push({ type: ch, raw: ch, start: i, end: i + 1 });
+        i++;
+      } else if (/\s/.test(ch)) {
+        let j = i + 1;
+        while (j < n && /\s/.test(text[j])) { j++; }
+        tokens.push({ type: "ws", raw: text.slice(i, j), start: i, end: j });
+        i = j;
+      } else {
+        const m = /^(true|false|null)/.exec(text.slice(i));
+        if (m) {
+          tokens.push({ type: "literal", raw: m[0], start: i, end: i + m[0].length });
+          i += m[0].length;
+        } else {
+          tokens.push({ type: "raw", raw: ch, start: i, end: i + 1 });
+          i++;
+        }
+      }
+    }
+    return tokens;
+  }
+
+  // Returns { text, count } - text with numeric arrays under the MINIFY_KEYS
+  // properties rewritten as one whitespace-free line; count is how many
+  // arrays were shrunk. text is unchanged (count 0) when there is nothing.
+  function minifyCoordinates(text) {
+    const tokens = tokenizeJson(text);
+    const spans = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t.type !== "string" || !MINIFY_KEYS.has(t.value)) { continue; }
+      let k = i + 1;
+      while (tokens[k] && tokens[k].type === "ws") { k++; }
+      if (!tokens[k] || tokens[k].type !== ":") { continue; }
+      k++;
+      while (tokens[k] && tokens[k].type === "ws") { k++; }
+      if (!tokens[k] || tokens[k].type !== "[") { continue; }
+      let depth = 0;
+      let end = k;
+      for (; end < tokens.length; end++) {
+        if (tokens[end].type === "[") { depth++; }
+        else if (tokens[end].type === "]") { depth--; if (depth === 0) { break; } }
+      }
+      if (depth !== 0) { continue; }               // unterminated array - leave it
+      let pure = true;
+      for (let p = k + 1; p < end; p++) {
+        const tt = tokens[p].type;
+        if (tt !== "number" && tt !== "[" && tt !== "]" && tt !== "," && tt !== "ws") {
+          pure = false;
+          break;
+        }
+      }
+      if (!pure) { continue; }                     // non-numeric content - leave it
+      const compact = tokens.slice(k, end + 1)
+        .filter(tok => tok.type !== "ws")
+        .map(tok => tok.raw)
+        .join("");
+      spans.push({ start: tokens[k].start, end: tokens[end].end, compact });
+    }
+    if (!spans.length) { return { text, count: 0 }; }
+    let out = text;
+    for (let s = spans.length - 1; s >= 0; s--) {
+      const sp = spans[s];
+      out = out.slice(0, sp.start) + sp.compact + out.slice(sp.end);
+    }
+    return { text: out, count: spans.length };
+  }
+
+  // The editor text is always produced the same way: JSON.stringify with
+  // indenting, then minifyCoordinates on top - so the coordinates collapse
+  // to single lines on every load / re-serialize, and nothing else moves.
+  function prettyMinify(data) {
+    return minifyCoordinates(JSON.stringify(data, null, 2)).text;
+  }
+
   let widthAnimHandler = null;
 
   function stopWidthAnim() {
@@ -1931,7 +2302,7 @@
     dataLayer.getLayers().slice().forEach(l => {
       if (!map.hasLayer(l)) { dataLayer.removeLayer(l); }
     });
-    const text = JSON.stringify(dataLayer.toGeoJSON(), null, 2);
+    const text = prettyMinify(dataLayer.toGeoJSON());
     setEditorText(text);
     lastRendered = text;
     saveNow();
