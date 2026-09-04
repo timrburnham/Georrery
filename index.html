@@ -292,24 +292,6 @@
   #nevermind-btn:not(:disabled):hover,
   #text-oops-btn:hover { background: #475569; }
 
-  /* "Min": permanent green button (unlike Update / Never mind it does not
-     track the dirty state) - always visible, always clickable */
-  #min-btn {
-    flex: 0 0 auto;
-    border: none;
-    border-radius: 999px;
-    padding: 5px 14px;
-    font: 600 .78rem system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    letter-spacing: .02em;
-    color: #fff;
-    background: #16a34a;
-    cursor: pointer;
-    transition: background-color .15s ease;
-  }
-
-  #min-btn:hover { background: #15803d; }
-  #min-btn:active { background: #166534; }
-
   #panel-status {
     flex: 1 1 auto;
     font-size: .8rem;
@@ -322,10 +304,9 @@
 
   /* collapsed = compact pill: only the bar, no editor/status internals;
      the Update button keeps its slot while dirty so it stays clickable,
-     otherwise it is removed from layout entirely; Min is expanded-only */
+     otherwise it is removed from layout entirely */
   #panel:not(.open) #panel-status { display: none; }
   #panel:not(.open) #panel-body { display: none; }
-  #panel:not(.open) #min-btn { display: none; }
   #panel:not(.open) #update-btn:not(.show),
   #panel:not(.open) #nevermind-btn:not(.show) { display: none; }
 
@@ -910,7 +891,6 @@
   <div id="panel">
     <div id="panel-bar" title="Toggle GeoJSON panel">
       <h2>GeoJSON</h2>
-      <button id="min-btn" type="button" title="Collapse the coordinate arrays onto single lines">Min</button>
       <button id="update-btn" type="button" title="Render edited GeoJSON onto the map">Update</button>
       <button id="nevermind-btn" type="button" title="Discard edits and restore the saved GeoJSON">Never mind</button>
       <div id="panel-status"></div>
@@ -992,6 +972,11 @@
 
   const EMPTY_GEOJSON_TEXT = JSON.stringify({ type: "FeatureCollection", features: [] }, null, 2);
 
+  // Keys whose numeric arrays are collapsed to single lines by the minifier
+  // (declared up here: minifyCoordinates runs during init, so the const must
+  // not sit in the temporal dead zone below).
+  const MINIFY_KEYS = new Set(["coordinates", "bbox", "center"]);
+
   const map = L.map("map", { worldCopyJump: true }).setView([20, 0], 2);
 
   L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
@@ -1008,7 +993,6 @@
   const statusEl = document.getElementById("panel-status");
   const updateBtn = document.getElementById("update-btn");
   const neverMindBtn = document.getElementById("nevermind-btn");
-  const minBtn = document.getElementById("min-btn");
   const textarea = document.getElementById("geojson-input");
   const brand = document.getElementById("brand");
   const header = document.querySelector("header");
@@ -1289,7 +1273,7 @@
           base = { type: "FeatureCollection", features: [] };
         }
         const merged = { type: "FeatureCollection", features: base.features.slice().concat(features) };
-        const text = JSON.stringify(merged, null, 2);
+        const text = prettyMinify(merged);
         setEditorText(text);
         renderData(merged);
         lastRendered = text;
@@ -1987,8 +1971,12 @@
   });
 
   // Load persisted GeoJSON (or the empty collection) before CM takes over.
+  // Stored text is normalized the same way as freshly serialized text:
+  // indented, then the coordinate arrays collapsed by the minifier.
   const savedText = loadSavedText();
-  textarea.value = savedText ? savedText : EMPTY_GEOJSON_TEXT;
+  textarea.value = savedText
+    ? minifyCoordinates(savedText).text
+    : EMPTY_GEOJSON_TEXT;
 
   // CodeMirror, with a plain-textarea fallback if the CDN library fails to load.
   if (typeof CodeMirror !== "undefined") {
@@ -2033,7 +2021,8 @@
   neverMindBtn.addEventListener("click", e => {
     e.stopPropagation(); // don't toggle the panel
     const saved = loadSavedText();
-    const text = saved ? saved : EMPTY_GEOJSON_TEXT;
+    // normalize the restored text the same way as every other load
+    const text = minifyCoordinates(saved ? saved : EMPTY_GEOJSON_TEXT).text;
     setEditorText(text);
     if (text !== lastRendered) {
       // storage and the editor disagree with what is drawn (e.g. right after
@@ -2046,13 +2035,13 @@
     (cm || textarea).focus();
   });
 
-  // ---- "Min": collapse coordinate arrays onto one line ----
+  // ---- coordinate minifier (runs on every serialized text) ----
   // A text-level minifier that touches ONLY the numeric payload arrays
   // ("coordinates", "bbox", "center" - the "coordinates"-style fields that
   // hold all the numbers). Everything else - indentation, whitespace,
-  // string content - is left byte-for-byte intact. The result is the same
-  // data, so a clean text stays clean (lastRendered follows the change).
-  const MINIFY_KEYS = new Set(["coordinates", "bbox", "center"]);
+  // string content - is left byte-for-byte intact. Every load path pipes
+  // the JSON.stringify output through this (see prettyMinify), so the
+  // editor text always shows single-line coordinate arrays.
 
   function tokenizeJson(text) {
     const tokens = [];
@@ -2139,22 +2128,13 @@
     return { text: out, count: spans.length };
   }
 
-  minBtn.addEventListener("click", e => {
-    e.stopPropagation(); // don't toggle the panel
-    const text = editorValue();
-    const { text: minified, count } = minifyCoordinates(text);
-    if (minified === text) {
-      setStatus("Nothing to minify");
-      return;
-    }
-    // A real change: the minified text becomes an unsaved edit - lastRendered
-    // is untouched, so the status turns dirty and Update / Never mind appear.
-    // The map still shows the same data; Update commits (and saves) the text,
-    // Never mind discards it.
-    setEditorText(minified);
-    refreshStatus();
-    setStatus(`Minified ${count} array${count === 1 ? "" : "s"} - unsaved`);
-  });
+  // The editor text is always produced the same way: JSON.stringify with
+  // indenting, then minifyCoordinates on top - so the coordinates collapse
+  // to single lines on every load / re-serialize, and nothing else moves.
+  function prettyMinify(data) {
+    return minifyCoordinates(JSON.stringify(data, null, 2)).text;
+  }
+
   let widthAnimHandler = null;
 
   function stopWidthAnim() {
@@ -2322,7 +2302,7 @@
     dataLayer.getLayers().slice().forEach(l => {
       if (!map.hasLayer(l)) { dataLayer.removeLayer(l); }
     });
-    const text = JSON.stringify(dataLayer.toGeoJSON(), null, 2);
+    const text = prettyMinify(dataLayer.toGeoJSON());
     setEditorText(text);
     lastRendered = text;
     saveNow();
